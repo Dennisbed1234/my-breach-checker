@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BreachIntel | Command & Control Center</title>
-<script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen p-6 font-sans">
 <div class="max-w-6xl mx-auto space-y-6">
@@ -65,6 +65,25 @@
                 </h2>
             </div>
         </div>
+
+        <!-- NEW: Threat Intelligence Ingestion Control Panel -->
+        <div class="bg-slate-900 border border-slate-800 p-5 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+                <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider">Threat Intelligence Pipeline</h3>
+                <p class="text-xs text-slate-400 font-mono mt-1">Pull fresh entries from open security corpora straight into Neon.</p>
+            </div>
+            <div class="flex flex-col sm:items-end gap-2 w-full sm:w-auto">
+                <button
+                    onclick="triggerSync()"
+                    id="syncBtn"
+                    class="bg-red-600 hover:bg-red-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all w-full sm:w-auto"
+                >
+                    Sync Feeds Now
+                </button>
+                <div id="syncStatus" class="text-xs font-mono text-slate-400"></div>
+            </div>
+        </div>
+
         <!-- Recent Records -->
         <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
             <div class="px-6 py-4 border-b border-slate-800">
@@ -186,6 +205,36 @@
             errorMsg.classList.remove('hidden');
         }
     }
+
+    // NEW: Trigger ingestion scraper from the UI
+    async function triggerSync() {
+        const token = document.getElementById('adminSecret').value.trim();
+        const statusDiv = document.getElementById('syncStatus');
+        const syncBtn = document.getElementById('syncBtn');
+
+        syncBtn.disabled = true;
+        syncBtn.textContent = 'Syncing...';
+        statusDiv.textContent = '[*] Pulling records into database...';
+
+        try {
+            const res = await fetch('/api/admin/sync-feeds', {
+                method: 'POST',
+                headers: { 'x-admin-token': token }
+            });
+
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Sync failed');
+
+            statusDiv.textContent = `[✔] ${data.message}`;
+            loadStats(); // Refresh stats and table automatically
+        } catch (err) {
+            statusDiv.textContent = `[!] Error: ${err.message}`;
+        } finally {
+            syncBtn.disabled = false;
+            syncBtn.textContent = 'Sync Feeds Now';
+        }
+    }
+
     // Prevent database values from being interpreted as HTML
     function escapeHtml(value) {
         return String(value)
