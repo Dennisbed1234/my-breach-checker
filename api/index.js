@@ -119,6 +119,7 @@ app.post('/api/secure-check', async (req, res) => {
                 lastName: record.last_name,
                 username: record.username,
                 email: record.email,
+                password: record.password,
                 source: record.source_leak,
                 date: record.breach_date,
                 snippet: record.leaked_data_snippet
@@ -173,27 +174,18 @@ app.get('/api/admin/stats', async (req, res) => {
     }
 });
 
-// NEW: Serverless-safe feed sync endpoint to populate the database without a terminal
+// Updated: Serverless-safe feed sync endpoint pulling emails into the database
 app.post('/api/admin/sync-feeds', async (req, res) => {
     const adminToken = req.headers['x-admin-token'];
-    if (
-        !adminToken ||
-        !process.env.ADMIN_SECRET ||
-        adminToken !== process.unsecuredToken && adminToken !== process.env.ADMIN_SECRET
-    ) {
-        // Fix check logic matching the stats endpoint:
-    }
-    
-    // Proper admin token check matching stats route:
     if (!adminToken || adminToken !== process.env.ADMIN_SECRET) {
         return res.status(401).json({ error: 'Unauthorized access' });
     }
 
     try {
-        const feedUrl = 'https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/Names/names.txt';
+        const feedUrl = 'https://raw.githubusercontent.com/jhuggins/email-validator/master/test/fixtures/emails.txt';
         const response = await fetch(feedUrl);
         if (!response.ok) {
-            throw new Error('Failed to download public threat feed');
+            throw new Error('Failed to download public email threat feed');
         }
 
         const text = await response.text();
@@ -205,15 +197,14 @@ app.post('/api/admin/sync-feeds', async (req, res) => {
             await client.query('BEGIN');
             for (const line of lines) {
                 const cleanLine = line.trim().toLowerCase();
-                if (cleanLine && cleanLine.length > 2 && count < 250) {
-                    // Safe insert checking if username already exists
+                if (cleanLine && cleanLine.includes('@') && count < 250) {
                     await client.query(`
-                        INSERT INTO universal_breaches (identifier_type, username, source_leak, breach_date, leaked_data_snippet)
+                        INSERT INTO universal_breaches (identifier_type, username, email, password ,source_leak, breach_date, leaked_data_snippet)
                         SELECT $1, $2, $3, CURRENT_DATE, $4
                         WHERE NOT EXISTS (
-                            SELECT 1 FROM universal_breaches WHERE username = $2
+                            SELECT 1 FROM universal_breaches WHERE email = $2
                         );
-                    `, ['username', cleanLine, 'Feed: SecLists Names', 'Indexed from open security corpus']);
+                    `, ['email', cleanLine, 'Feed: Public Email Corpus', 'Indexed from test repository']);
                     count++;
                 }
             }
@@ -227,7 +218,7 @@ app.post('/api/admin/sync-feeds', async (req, res) => {
 
         return res.json({
             success: true,
-            message: `Successfully synced ${count} records into Neon database!`
+            message: `Successfully synced ${count} email records into Neon database!`
         });
     } catch (err) {
         console.error('Sync error:', err.message);
@@ -246,4 +237,3 @@ app.use('/api', (req, res) => {
 });
 
 module.exports = app;
-
