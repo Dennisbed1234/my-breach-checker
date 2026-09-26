@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BreachIntel | Command & Control Center</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-6 font-sans">
+<div class="max-w-6xl mx-auto space-y-6">
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 border-b border-slate-800 pb-4">
+        <div>
+            <h1 class="text-2xl font-bold tracking-wider text-white">
+                COMMAND <span class="text-red-500">CENTER</span>
+            </h1>
+            <p class="text-xs text-slate-400 font-mono">
+                Database Analytics & Test Data Management
+            </p>
+        </div>
+        <div id="authBox" class="flex gap-2">
+            <input
+                type="password"
+                id="adminSecret"
+                placeholder="Admin Secret Token"
+                class="bg-slate-900 border border-slate-800 px-3 py-2 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-red-500"
+            >
+            <button
+                onclick="loadStats()"
+                class="bg-red-600 hover:bg-red-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all"
+            >
+                Authenticate
+            </button>
+        </div>
+    </div>
+    <!-- Dashboard -->
+    <div id="dashboardContent" class="hidden space-y-6">
+        <!-- Metrics -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-xl">
+                <span class="text-xs font-mono text-slate-500 uppercase">
+                    Total Records
+                </span>
+                <h2
+                    id="totalRecordsStat"
+                    class="text-3xl font-extrabold text-white mt-1"
+                >
+                    0
+                </h2>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-xl">
+                <span class="text-xs font-mono text-slate-500 uppercase">
+                    Database Status
+                </span>
+                <h2 class="text-3xl font-extrabold text-emerald-400 mt-1">
+                    Operational
+                </h2>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-xl">
+                <span class="text-xs font-mono text-slate-500 uppercase">
+                    Data Mode
+                </span>
+                <h2 class="text-3xl font-extrabold text-amber-400 mt-1">
+                    Plain Text
+                </h2>
+            </div>
+        </div>
+        <!-- Recent Records -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-800">
+                <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider">
+                    Recently Added Records
+                </h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs text-slate-300 font-mono">
+                    <thead class="bg-slate-950 text-slate-500 border-b border-slate-800">
+                        <tr>
+                            <th class="px-6 py-3">Type</th>
+                            <th class="px-6 py-3">Name</th>
+                            <th class="px-6 py-3">Username</th>
+                            <th class="px-6 py-3">Email</th>
+                            <th class="px-6 py-3">Password</th>
+                            <th class="px-6 py-3">Source</th>
+                            <th class="px-6 py-3">Date</th>
+                        </tr>
+                    </thead>
+                    <tbody
+                        id="recentTableBody"
+                        class="divide-y divide-slate-800/60"
+                    >
+                        <!-- Populated dynamically -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <!-- Error -->
+    <div
+        id="errorMsg"
+        class="hidden text-center text-red-400 text-xs font-mono mt-4"
+    ></div>
+</div>
+<script>
+    async function loadStats() {
+        const token =
+            document.getElementById('adminSecret').value.trim();
+        const errorMsg =
+            document.getElementById('errorMsg');
+        const dashboard =
+            document.getElementById('dashboardContent');
+        errorMsg.classList.add('hidden');
+        if (!token) {
+            errorMsg.textContent =
+                'Admin secret is required.';
+            errorMsg.classList.remove('hidden');
+            return;
+        }
+        try {
+            const res = await fetch('/api/admin/stats', {
+                headers: {
+                    'x-admin-token': token
+                }
+            });
+            if (!res.ok) {
+                throw new Error(
+                    'Invalid token or unauthorized access.'
+                );
+            }
+            const data = await res.json();
+            // Total records
+            document
+                .getElementById('totalRecordsStat')
+                .textContent =
+                Number(data.totalRecords)
+                    .toLocaleString();
+            // Recent records
+            const tbody =
+                document.getElementById('recentTableBody');
+            tbody.innerHTML = '';
+            data.recent.forEach(record => {
+                const fullName = [
+                    record.first_name || '',
+                    record.last_name || ''
+                ]
+                    .join(' ')
+                    .trim() || 'N/A';
+                const row =
+                    document.createElement('tr');
+                row.innerHTML = `
+                    <td class="px-6 py-3 text-red-400">
+                        ${escapeHtml(record.identifier_type || 'N/A')}
+                    </td>
+                    <td class="px-6 py-3">
+                        ${escapeHtml(fullName)}
+                    </td>
+                    <td class="px-6 py-3">
+                        ${escapeHtml(record.username || 'N/A')}
+                    </td>
+                    <td class="px-6 py-3">
+                        ${escapeHtml(record.email || 'N/A')}
+                    </td>
+                    <td class="px-6 py-3 text-amber-400">
+                        ${escapeHtml(record.password || 'N/A')}
+                    </td>
+                    <td class="px-6 py-3 text-slate-400">
+                        ${escapeHtml(record.source_leak || 'N/A')}
+                    </td>
+                    <td class="px-6 py-3 text-slate-500">
+                        ${
+                            record.breach_date
+                                ? String(record.breach_date).split('T')[0]
+                                : 'N/A'
+                        }
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+            dashboard.classList.remove('hidden');
+            document
+                .getElementById('authBox')
+                .classList.add('opacity-50');
+        } catch (err) {
+            errorMsg.textContent =
+                err.message;
+            errorMsg.classList.remove('hidden');
+        }
+    }
+    // Prevent database values from being interpreted as HTML
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+</script>
+</body>
+</html>
