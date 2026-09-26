@@ -9,7 +9,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ==================================================
 // Neon PostgreSQL connection
+// ==================================================
+
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
@@ -22,7 +25,7 @@ const pool = new Pool({
 // ==================================================
 
 app.post('/api/secure-check', async (req, res) => {
-    const { query } = req.body;
+    const { type, query } = req.body;
 
     if (!query) {
         return res.status(400).json({
@@ -30,15 +33,38 @@ app.post('/api/secure-check', async (req, res) => {
         });
     }
 
+    // Only allow known database fields.
+    // This prevents arbitrary SQL column names from being supplied.
+    const fieldMap = {
+        email: 'email',
+        username: 'username',
+        password: 'password',
+        first_name: 'first_name',
+        last_name: 'last_name'
+    };
+
+    const column = fieldMap[type];
+
+    if (!column) {
+        return res.status(400).json({
+            error: 'Invalid search type'
+        });
+    }
+
     try {
         const sql = `
             SELECT
                 identifier_type,
+                first_name,
+                last_name,
+                username,
+                email,
+                password,
                 source_leak,
                 breach_date,
                 leaked_data_snippet
             FROM universal_breaches
-            WHERE identifier = $1
+            WHERE ${column} = $1
             LIMIT 1
         `;
 
@@ -56,6 +82,11 @@ app.post('/api/secure-check', async (req, res) => {
             pwned: true,
             match: {
                 type: record.identifier_type,
+                firstName: record.first_name,
+                lastName: record.last_name,
+                username: record.username,
+                email: record.email,
+                password: record.password,
                 source: record.source_leak,
                 date: record.breach_date,
                 snippet: record.leaked_data_snippet
@@ -88,11 +119,13 @@ app.get('/api/admin/stats', async (req, res) => {
     }
 
     try {
+        // Total records
         const totalCountRes = await pool.query(`
             SELECT COUNT(*) AS count
             FROM universal_breaches
         `);
 
+        // Records grouped by type
         const typeBreakdownRes = await pool.query(`
             SELECT
                 identifier_type,
@@ -102,11 +135,16 @@ app.get('/api/admin/stats', async (req, res) => {
             ORDER BY count DESC
         `);
 
+        // Most recent records
         const recentRecordsRes = await pool.query(`
             SELECT
                 id,
                 identifier_type,
-                identifier,
+                first_name,
+                last_name,
+                username,
+                email,
+                password,
                 source_leak,
                 breach_date
             FROM universal_breaches
