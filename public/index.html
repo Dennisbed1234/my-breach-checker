@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BreachIntel | Global Threat Intelligence & Victim Verification</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between font-sans">
+
+    <!-- Header Navigation -->
+    <header class="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
+        <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="h-3 w-3 bg-red-500 rounded-full animate-pulse"></div>
+                <span class="font-bold text-lg tracking-wider text-white">BREACH<span class="text-red-500">INTEL</span></span>
+            </div>
+            <span class="text-xs px-3 py-1 bg-red-950/80 text-red-400 border border-red-800 rounded-full font-mono">SECURE NODE ACTIVE</span>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="max-w-3xl mx-auto px-6 py-16 w-full flex-grow">
+        
+        <!-- Hero Section -->
+        <div class="text-center space-y-4 mb-10">
+            <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight text-white">
+                Check Your Exposure. <span class="text-red-500">Take Back Control.</span>
+            </h1>
+            <p class="text-slate-400 text-base sm:text-lg max-w-xl mx-auto">
+                Search multi-vector threat intelligence logs to verify if your email or phone number has been exposed in recent data breaches.
+            </p>
+        </div>
+
+        <!-- Search Card -->
+        <div class="bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-2xl shadow-2xl relative overflow-hidden">
+            <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-red-500 via-amber-500 to-emerald-500"></div>
+            
+            <form id="searchForm" class="space-y-4">
+                <div>
+                    <label for="query" class="block text-sm font-medium text-slate-300 mb-2">Email Address or Phone Number</label>
+                    <div class="flex flex-col sm:flex-row gap-3">
+                        <input 
+                            type="text" 
+                            id="query" 
+                            required 
+                            placeholder="e.g., user@domain.com or +1234567890" 
+                            class="flex-grow bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-all font-mono text-sm"
+                        >
+                        <button 
+                            type="submit" 
+                            id="submitBtn"
+                            class="bg-red-600 hover:bg-red-500 text-white font-semibold px-8 py-3.5 rounded-xl transition-all shadow-lg shadow-red-950 flex items-center justify-center cursor-pointer"
+                        >
+                            <span>Search Logs</span>
+                        </button>
+                    </div>
+                </div>
+            </form>
+
+            <!-- Loading Indicator -->
+            <div id="loader" class="hidden mt-8 text-center py-6">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-slate-800 border-t-red-500"></div>
+                <p class="text-xs text-slate-400 mt-3 font-mono tracking-wider">QUERYING THREAT INDEX...</p>
+            </div>
+
+            <!-- Results Panel -->
+            <div id="results" class="hidden mt-8 space-y-6"></div>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-900 py-6 text-center text-xs text-slate-600">
+        <p>Built for victim defense and community safety. Zero logging of search queries.</p>
+    </footer>
+
+    <!-- Frontend Interactive Script -->
+    <script>
+        const form = document.getElementById('searchForm');
+        const queryInput = document.getElementById('query');
+        const loader = document.getElementById('loader');
+        const resultsDiv = document.getElementById('results');
+        const submitBtn = document.getElementById('submitBtn');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = queryInput.value.trim();
+            if (!query) return;
+
+            // UI State: Loading
+            loader.classList.remove('hidden');
+            resultsDiv.classList.add('hidden');
+            resultsDiv.innerHTML = '';
+            submitBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/check', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query })
+                });
+
+                const data = await response.json();
+                loader.classList.add('hidden');
+                resultsDiv.classList.remove('hidden');
+
+                if (data.pwned) {
+                    let matchesHtml = data.matches.map(m => `
+                        <div class="bg-slate-950/60 border border-red-900/40 rounded-xl p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                            <div>
+                                <span class="text-xs font-mono text-red-400 bg-red-950/80 px-2.5 py-1 rounded border border-red-800">${m.source}</span>
+                                <p class="text-sm text-slate-300 mt-2">${m.snippet || 'Compromised record fragment'}</p>
+                            </div>
+                            <span class="text-xs text-slate-500 font-mono whitespace-nowrap">Date: ${m.date}</span>
+                        </div>
+                    `).join('');
+
+                    resultsDiv.innerHTML = `
+                        <div class="bg-red-950/30 border border-red-900/60 rounded-xl p-6 space-y-4">
+                            <div class="flex items-center space-x-3">
+                                <div class="h-3 w-3 bg-red-500 rounded-full"></div>
+                                <h3 class="text-lg font-bold text-red-400">Exposure Detected</h3>
+                            </div>
+                            <p class="text-sm text-slate-300">This identifier was found active in known threat intelligence databases. Review the breach sources below and take immediate security action.</p>
+                            <div class="space-y-3 mt-4">${matchesHtml}</div>
+                            
+                            <div class="mt-6 pt-4 border-t border-red-900/40 bg-slate-900/80 p-4 rounded-xl">
+                                <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wider mb-2">Recommended Action Plan</h4>
+                                <ul class="text-xs text-slate-400 space-y-1.5 list-disc pl-4">
+                                    <li>Immediately change passwords on vital accounts using a password manager.</li>
+                                    <li>Enable Multi-Factor Authentication (MFA) or Passkeys everywhere possible.</li>
+                                    <li>Monitor linked banking statements and emails for suspicious login attempts.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    resultsDiv.innerHTML = `
+                        <div class="bg-emerald-950/20 border border-emerald-900/50 rounded-xl p-6 text-center space-y-2">
+                            <div class="inline-flex items-center justify-center h-10 w-10 bg-emerald-950 border border-emerald-800 rounded-full text-emerald-400 mb-1">✓</div>
+                            <h3 class="text-lg font-bold text-emerald-400">No Exposures Found</h3>
+                            <p class="text-sm text-slate-400 max-w-md mx-auto">Good news! This identifier does not appear in our current active threat intelligence indexes.</p>
+                        </div>
+                    `;
+                }
+
+            } catch (err) {
+                loader.classList.add('hidden');
+                resultsDiv.classList.remove('hidden');
+                resultsDiv.innerHTML = `
+                    <div class="bg-amber-950/30 border border-amber-900/50 rounded-xl p-4 text-center">
+                        <p class="text-sm text-amber-400">Connection error or server timeout. Please try again shortly.</p>
+                    </div>
+                `;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
