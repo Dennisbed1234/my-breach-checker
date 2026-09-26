@@ -7,17 +7,11 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
-// Expanded intelligence feeds and public security data repositories
 const EXPANDED_FEED_URLS = [
     {
         name: 'SecLists Usernames & Aliases',
         url: 'https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/Names/names.txt',
         type: 'username'
-    },
-    {
-        name: 'SecLists Top Compromised Passwords/Emails Corpus',
-        url: 'https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-1000000.txt',
-        type: 'password_pattern'
     },
     {
         name: 'Public Domain Email Test Corpus A',
@@ -27,11 +21,6 @@ const EXPANDED_FEED_URLS = [
     {
         name: 'Open Source Security Feed Archive Alpha',
         url: 'https://raw.githubusercontent.com/audibleblink/some-sample-lists/master/emails.txt',
-        type: 'email'
-    },
-    {
-        name: 'Global Threat Intelligence Mirror Beta',
-        url: 'https://raw.githubusercontent.com/dinosaure/92552e7724f6057eedf6a1776a891c62/raw/db.txt',
         type: 'email'
     }
 ];
@@ -46,7 +35,7 @@ async function runAggregatedIngestion() {
             console.log(`\n--------------------------------------------------`);
             console.log(`[*] Connecting to source: [${feed.name}]`);
             console.log(`[*] URL: ${feed.url}`);
-            
+
             const response = await axios({
                 method: 'get',
                 url: feed.url,
@@ -72,7 +61,6 @@ async function processFeedStream(inputStream, sourceLabel, defaultType) {
     });
 
     const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
 
     let batch = [];
     let totalProcessed = 0;
@@ -90,9 +78,6 @@ async function processFeedStream(inputStream, sourceLabel, defaultType) {
         if (emailRegex.test(cleanLine)) {
             identifierType = 'email';
             identifierValue = cleanLine.toLowerCase();
-        } else if (phoneRegex.test(cleanLine.replace(/[\s()-]/g, ''))) {
-            identifierType = 'phone';
-            identifierValue = cleanLine.replace(/[\s()-]/g, '');
         } else if (defaultType === 'username' && cleanLine.length > 2) {
             identifierType = 'username';
             identifierValue = cleanLine.toLowerCase();
@@ -102,7 +87,7 @@ async function processFeedStream(inputStream, sourceLabel, defaultType) {
             batch.push({
                 type: identifierType,
                 value: identifierValue,
-                snippet: `Indexed from active threat feed`
+                snippet: 'Indexed from active threat feed'
             });
         }
 
@@ -126,15 +111,30 @@ async function insertBatchToDatabase(records, sourceLabel) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        
+
         const queryText = `
-            INSERT INTO universal_breaches (identifier_type, identifier_value, leaked_data_snippet, source_leak, breach_date)
-            VALUES ($1, $2, $3, $4, CURRENT_DATE)
-            ON CONFLICT (identifier_type, identifier_value, source_leak) DO NOTHING;
+            INSERT INTO universal_breaches (
+                identifier_type,
+                email,
+                username,
+                leaked_data_snippet,
+                source_leak,
+                breach_date
+            )
+            VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)
         `;
 
         for (const rec of records) {
-            await client.query(queryText, [rec.type, rec.value, rec.snippet, `Feed: ${sourceLabel}`]);
+            const email = rec.type === 'email' ? rec.value : null;
+            const username = rec.type === 'username' ? rec.value : null;
+
+            await client.query(queryText, [
+                rec.type,
+                email,
+                username,
+                rec.snippet || 'Indexed from feed',
+                `Feed: ${sourceLabel}`
+            ]);
         }
 
         await client.query('COMMIT');
