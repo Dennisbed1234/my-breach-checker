@@ -163,24 +163,14 @@
         const submitBtn = document.getElementById('submitBtn');
 
 
-        // ==================================================
-        // Change placeholder based on search type
-        // ==================================================
-
         searchType.addEventListener('change', () => {
 
             const placeholders = {
-
                 email: 'e.g. example@example.com',
-
-                username: 'e.g. 123456780',
-
+                username: 'e.g. johnsmith',
                 first_name: 'e.g. Joe',
-
-                last_name: 'e.g. Joe',
-
+                last_name: 'e.g. Smith',
                 password: 'e.g. Dummy123'
-
             };
 
             queryInput.placeholder =
@@ -191,263 +181,151 @@
         });
 
 
-        // ==================================================
-        // HTML escaping
-        // ==================================================
-
         function escapeHtml(value) {
 
             return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
+                .replace(/&/g, '&')
+                .replace(/</g, '<')
+                .replace(/>/g, '>')
+                .replace(/"/g, '"')
                 .replace(/'/g, '&#039;');
 
         }
 
 
-        // ==================================================
-        // Search
-        // ==================================================
-
         form.addEventListener('submit', async (e) => {
 
             e.preventDefault();
 
-            const query = queryInput.value;
-
+            const query = queryInput.value.trim();
             const type = searchType.value;
 
             if (!query) {
                 return;
             }
 
-
-            // Loading state
             loader.classList.remove('hidden');
-
             resultsDiv.classList.add('hidden');
-
             resultsDiv.innerHTML = '';
-
             submitBtn.disabled = true;
-
 
             try {
 
                 const response = await fetch('/api/secure-check', {
-
                     method: 'POST',
-
                     headers: {
                         'Content-Type': 'application/json'
                     },
-
                     body: JSON.stringify({
                         type,
                         query
                     })
-
                 });
 
+                const text = await response.text();
+                let data;
 
-                const data = await response.json();
-
-
-                if (!response.ok) {
-
+                try {
+                    data = JSON.parse(text);
+                } catch {
                     throw new Error(
-                        data.error || 'Search failed.'
+                        response.status === 404
+                            ? 'API route not found. Wait for redeploy or check Vercel logs.'
+                            : 'Server returned an invalid response (' + response.status + ').'
                     );
-
                 }
 
+                if (!response.ok) {
+                    throw new Error(
+                        data.error || data.detail || ('Search failed (' + response.status + ')')
+                    );
+                }
 
                 loader.classList.add('hidden');
-
                 resultsDiv.classList.remove('hidden');
-
-
-                // ==================================================
-                // Match found
-                // ==================================================
 
                 if (data.pwned) {
 
                     const match = data.match || {};
-
 
                     resultsDiv.innerHTML = `
 
                         <div class="bg-red-950/30 border border-red-900/60 rounded-xl p-6 space-y-5">
 
                             <div class="flex items-center space-x-3">
-
                                 <div class="h-3 w-3 bg-red-500 rounded-full animate-pulse"></div>
-
                                 <h3 class="text-lg font-bold text-red-400">
                                     Record Found
                                 </h3>
-
                             </div>
-
 
                             <p class="text-sm text-slate-300">
                                 A matching record was found in the test database.
                             </p>
 
-
-                            <!-- Record -->
                             <div class="bg-slate-950/70 border border-slate-800 rounded-xl overflow-hidden">
 
                                 <div class="px-4 py-3 border-b border-slate-800">
-
                                     <span class="text-xs font-mono uppercase tracking-wider text-slate-500">
                                         Database Record
                                     </span>
-
                                 </div>
-
 
                                 <div class="divide-y divide-slate-800/70">
 
                                     <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            Type
-                                        </span>
-
-                                        <span class="text-xs text-red-400 font-mono">
-                                            ${escapeHtml(match.type || 'N/A')}
-                                        </span>
-
+                                        <span class="text-xs text-slate-500">Type</span>
+                                        <span class="text-xs text-red-400 font-mono">${escapeHtml(match.type || 'N/A')}</span>
                                     </div>
 
-
                                     <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            First Name
-                                        </span>
-
-                                        <span class="text-xs text-slate-300 font-mono">
-                                            ${escapeHtml(match.firstName || 'N/A')}
-                                        </span>
-
+                                        <span class="text-xs text-slate-500">First Name</span>
+                                        <span class="text-xs text-slate-300 font-mono">${escapeHtml(match.firstName || 'N/A')}</span>
                                     </div>
 
-
                                     <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            Last Name
-                                        </span>
-
-                                        <span class="text-xs text-slate-300 font-mono">
-                                            ${escapeHtml(match.lastName || 'N/A')}
-                                        </span>
-
+                                        <span class="text-xs text-slate-500">Last Name</span>
+                                        <span class="text-xs text-slate-300 font-mono">${escapeHtml(match.lastName || 'N/A')}</span>
                                     </div>
 
-
                                     <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            Username
-                                        </span>
-
-                                        <span class="text-xs text-slate-300 font-mono">
-                                            ${escapeHtml(match.username || 'N/A')}
-                                        </span>
-
+                                        <span class="text-xs text-slate-500">Username</span>
+                                        <span class="text-xs text-slate-300 font-mono">${escapeHtml(match.username || 'N/A')}</span>
                                     </div>
 
-
                                     <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            Email
-                                        </span>
-
-                                        <span class="text-xs text-slate-300 font-mono">
-                                            ${escapeHtml(match.email || 'N/A')}
-                                        </span>
-
+                                        <span class="text-xs text-slate-500">Email</span>
+                                        <span class="text-xs text-slate-300 font-mono">${escapeHtml(match.email || 'N/A')}</span>
                                     </div>
 
-
                                     <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            Password
-                                        </span>
-
-                                        <span class="text-xs text-amber-400 font-mono">
-                                            ${escapeHtml(match.password || 'N/A')}
-                                        </span>
-
+                                        <span class="text-xs text-slate-500">Source</span>
+                                        <span class="text-xs text-slate-300 font-mono">${escapeHtml(match.source || 'N/A')}</span>
                                     </div>
 
-
                                     <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            Source
-                                        </span>
-
-                                        <span class="text-xs text-slate-300 font-mono">
-                                            ${escapeHtml(match.source || 'N/A')}
-                                        </span>
-
-                                    </div>
-
-
-                                    <div class="px-4 py-3 flex justify-between gap-4">
-
-                                        <span class="text-xs text-slate-500">
-                                            Breach Date
-                                        </span>
-
-                                        <span class="text-xs text-slate-400 font-mono">
-                                            ${escapeHtml(match.date || 'N/A')}
-                                        </span>
-
+                                        <span class="text-xs text-slate-500">Breach Date</span>
+                                        <span class="text-xs text-slate-400 font-mono">${escapeHtml(match.date || 'N/A')}</span>
                                     </div>
 
                                 </div>
 
                             </div>
 
-
-                            <!-- Snippet -->
                             <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-4">
-
                                 <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
                                     Data Snippet
                                 </h4>
-
                                 <p class="text-xs text-slate-400 font-mono break-words">
-                                    ${escapeHtml(
-                                        match.snippet ||
-                                        'No snippet available.'
-                                    )}
+                                    ${escapeHtml(match.snippet || 'No snippet available.')}
                                 </p>
-
                             </div>
 
                         </div>
 
                     `;
 
-                }
-
-
-                // ==================================================
-                // No match
-                // ==================================================
-
-                else {
+                } else {
 
                     resultsDiv.innerHTML = `
 
@@ -471,23 +349,17 @@
 
                 }
 
-
             } catch (err) {
 
                 loader.classList.add('hidden');
-
                 resultsDiv.classList.remove('hidden');
-
 
                 resultsDiv.innerHTML = `
 
                     <div class="bg-amber-950/30 border border-amber-900/50 rounded-xl p-4 text-center">
 
                         <p class="text-sm text-amber-400">
-                            ${escapeHtml(
-                                err.message ||
-                                'Connection error or server timeout.'
-                            )}
+                            ${escapeHtml(err.message || 'Connection error or server timeout.')}
                         </p>
 
                     </div>
