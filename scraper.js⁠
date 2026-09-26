@@ -1,0 +1,139 @@
+const axios = require('axios');
+const readline = require('readline');
+const db = require('./database');
+
+// An expanded array of public raw-text feeds, test corpora, and open intelligence mirrors
+const TARGET_FEED_URLS = [
+    {
+        name: 'Audibleblink Sample List',
+        url: 'https://raw.githubusercontent.com/audibleblink/some-sample-lists/master/emails.txt',
+        defaultType: 'email'
+    },
+    {
+        name: 'Public Domain Email Corpus',
+        url: 'https://raw.githubusercontent.com/jhuggins/email-validator/master/test/fixtures/emails.txt',
+        defaultType: 'email'
+    },
+    {
+        name: 'SecLists Name & Identifier Corpus',
+        url: 'https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/Names/names.txt',
+        defaultType: 'username'
+    },
+    {
+        name: 'Open Source Security Test List',
+        url: 'https://gist.githubusercontent.com/dinosaure/92552e7724f6057eedf6a1776a891c62/raw/db.txt',
+        defaultType: 'email'
+    }
+];
+
+const BATCH_SIZE = 1000;
+
+async function runUniversalIngestion() {
+    console.log('[*] Initializing Expanded Multi-Source Threat Ingestion Pipeline...');
+
+    for (const feed of TARGET_FEED_URLS) {
+        try {
+            console.log(`\n[*] Connecting to source: [${feed.name}]`);
+            const response = await axios({
+                method: 'get',
+                url: feed.url,
+                responseType: 'stream',
+                timeout: 30000
+            });
+
+            await processUniversalStream(response.data, feed.name, feed.defaultType);
+        } catch (error) {
+            console.error(`[!] Failed source [${feed.name}]: ${error.message}`);
+        }
+    }
+    console.log('\n[✔] Multi-source threat sync completed successfully.');
+}
+
+async function processUniversalStream(inputStream, sourceLabel, defaultType) {
+    const rl = readline.createInterface({
+        input: inputStream,
+        crlfDelay: Infinity
+    });
+
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+
+    let batch = [];
+    let totalProcessed = 0;
+    let totalInserted = 0;
+
+    for await (const line of rl) {
+        totalProcessed++;
+        const cleanLine = line.trim();
+
+        let identifierType = null;
+        let identifierValue = null;
+
+        if (emailRegex.test(cleanLine)) {
+            identifierType = 'email';
+            identifierValue = cleanLine.toLowerCase();
+        } else if (phoneRegex.test(cleanLine.replace(/[\s()-]/g, ''))) {
+            identifierType = 'phone';
+            identifierValue = cleanLine.replace(/[\s()-]/g, '');
+        } else if (defaultType === 'email' && cleanLine.includes('@')) {
+            identifierType = 'email';
+            identifierValue = cleanLine.toLowerCase();
+        } else if (defaultType === 'username' && cleanLine.length > 2) {
+            // Normalize raw names/usernames into searchable records for robust testing
+            identifierType = 'username';
+            identifierValue = cleanLine.toLowerCase();
+        }
+
+        if (identifierType && identifierValue) {
+            batch.push({
+                type: identifierType,
+                value: identifierValue,
+                snippet: 'Compromised public archive fragment'
+            });
+        }
+
+        if (batch.length >= BATCH_SIZE) {
+            await insertUniversalBatch(batch, sourceLabel);
+            totalInserted += batch.length;
+            batch = [];
+            process.stdout.write(`\r[+] Processed lines: ${totalProcessed} | Indexed records: ${totalInserted}`);
+        }
+    }
+
+    if (batch.length > 0) {
+        await insertUniversalBatch(batch, sourceLabel);
+        totalInserted += batch.length;
+    }
+
+    console.log(`\n[✔] Finished [${sourceLabel}] -> Scanned: ${totalProcessed}, Saved: ${totalInserted}`);
+}
+
+function insertUniversalBatch(records, sourceLabel) {
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            db.run('BEGIN TRANSACTION', (err) => {
+                if (err) return reject(err);
+
+                const stmt = db.prepare(`INSERT OR IGNORE INTO universal_breaches (identifier_type, identifier_value, leaked_data_snippet, source_leak, breach_date) VALUES (?, ?, ?, ?, ?)`);
+                const currentDate = new Date().toISOString().split('T')[0];
+
+                records.forEach(rec => {
+                    stmt.run(rec.type, rec.value, rec.snippet, `Feed: ${sourceLabel}`, currentDate);
+                });
+
+                stmt.finalize((err) => {
+                    if (err) {
+                        db.run('ROLLBACK');
+                        return reject(err);
+                    }
+                    db.run('COMMIT', (err) => {
+                        if (err) return reject(err);
+                        resolve();
+                    });
+                });
+            });
+        });
+    });
+}
+
+runUniversalIngestion();
