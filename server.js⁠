@@ -17,7 +17,10 @@ const pool = new Pool({
     }
 });
 
-// Plain-text search endpoint
+// ==================================================
+// Search
+// ==================================================
+
 app.post('/api/secure-check', async (req, res) => {
     const { query } = req.body;
 
@@ -28,9 +31,9 @@ app.post('/api/secure-check', async (req, res) => {
     }
 
     try {
-        // Search for the exact value stored in the database
         const sql = `
             SELECT
+                identifier_type,
                 source_leak,
                 breach_date,
                 leaked_data_snippet
@@ -41,21 +44,22 @@ app.post('/api/secure-check', async (req, res) => {
 
         const result = await pool.query(sql, [query]);
 
-        if (result.rows.length > 0) {
-            const record = result.rows[0];
-
+        if (result.rows.length === 0) {
             return res.json({
-                pwned: true,
-                match: {
-                    source: record.source_leak,
-                    date: record.breach_date,
-                    snippet: record.leaked_data_snippet
-                }
+                pwned: false
             });
         }
 
+        const record = result.rows[0];
+
         return res.json({
-            pwned: false
+            pwned: true,
+            match: {
+                type: record.identifier_type,
+                source: record.source_leak,
+                date: record.breach_date,
+                snippet: record.leaked_data_snippet
+            }
         });
 
     } catch (err) {
@@ -67,14 +71,80 @@ app.post('/api/secure-check', async (req, res) => {
     }
 });
 
+// ==================================================
+// Admin statistics
+// ==================================================
+
+app.get('/api/admin/stats', async (req, res) => {
+    const adminToken = req.headers['x-admin-token'];
+
+    if (
+        !adminToken ||
+        adminToken !== process.env.ADMIN_SECRET
+    ) {
+        return res.status(401).json({
+            error: 'Unauthorized access'
+        });
+    }
+
+    try {
+        const totalCountRes = await pool.query(`
+            SELECT COUNT(*) AS count
+            FROM universal_breaches
+        `);
+
+        const typeBreakdownRes = await pool.query(`
+            SELECT
+                identifier_type,
+                COUNT(*) AS count
+            FROM universal_breaches
+            GROUP BY identifier_type
+            ORDER BY count DESC
+        `);
+
+        const recentRecordsRes = await pool.query(`
+            SELECT
+                id,
+                identifier_type,
+                identifier,
+                source_leak,
+                breach_date
+            FROM universal_breaches
+            ORDER BY id DESC
+            LIMIT 10
+        `);
+
+        return res.json({
+            totalRecords: totalCountRes.rows[0].count,
+            breakdown: typeBreakdownRes.rows,
+            recent: recentRecordsRes.rows
+        });
+
+    } catch (err) {
+        console.error('Admin stats error:', err.message);
+
+        return res.status(500).json({
+            error: 'Internal server error'
+        });
+    }
+});
+
+// ==================================================
 // Local development
+// ==================================================
+
 if (process.env.NODE_ENV !== 'production') {
     const PORT = process.env.PORT || 3000;
 
     app.listen(PORT, () => {
-        console.log(`Local server running on http://localhost:${PORT}`);
+        console.log(
+            `Local server running on http://localhost:${PORT}`
+        );
     });
 }
 
+// ==================================================
 // Vercel serverless export
+// ==================================================
+
 module.exports = serverless(app);
