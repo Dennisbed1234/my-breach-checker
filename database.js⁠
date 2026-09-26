@@ -1,0 +1,36 @@
+const { Pool } = require('pg');
+
+// Vercel / Cloud PostgreSQL connection string environment variable
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
+
+async function initDb() {
+    const client = await pool.connect();
+    try {
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS universal_breaches (
+                id SERIAL PRIMARY KEY,
+                identifier_type VARCHAR(50) NOT NULL,
+                identifier_value TEXT NOT NULL,
+                leaked_data_snippet TEXT,
+                source_leak VARCHAR(255) NOT NULL,
+                breach_date DATE NOT NULL,
+                UNIQUE(identifier_type, identifier_value, source_leak)
+            );
+        `);
+        await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_identifier ON universal_breaches(identifier_type, identifier_value);
+        `);
+        console.log('[✔] Cloud PostgreSQL database initialized.');
+    } finally {
+        client.release();
+    }
+}
+
+initDb().catch(err => console.error('[!] Database initialization error:', err.message));
+
+exports.query = (text, params) => pool.query(text, params);
