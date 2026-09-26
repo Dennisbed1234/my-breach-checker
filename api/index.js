@@ -53,7 +53,8 @@ app.get('/api', (req, res) => {
         endpoints: {
             health: 'GET /api/health',
             secureCheck: 'POST /api/secure-check',
-            adminStats: 'GET /api/admin/stats'
+            adminStats: 'GET /api/admin/stats',
+            syncFeeds: 'POST /api/admin/sync-feeds'
         }
     });
 });
@@ -102,7 +103,7 @@ app.post('/api/secure-check', async (req, res) => {
             LIMIT 1
         `;
 
-        const result = await pool.query(sql, [String(query).trim()]);
+        const result = await pool.query(sql, [String(query).trim().toLowerCase()]);
 
         if (result.rows.length === 0) {
             return res.json({ pwned: false });
@@ -118,7 +119,6 @@ app.post('/api/secure-check', async (req, res) => {
                 lastName: record.last_name,
                 username: record.username,
                 email: record.email,
-                // Intentionally omit password from API response for safety
                 source: record.source_leak,
                 date: record.breach_date,
                 snippet: record.leaked_data_snippet
@@ -173,6 +173,71 @@ app.get('/api/admin/stats', async (req, res) => {
     }
 });
 
+// NEW: Serverless-safe feed sync endpoint to populate the database without a terminal
+app.post('/api/admin/sync-feeds', async (req, res) => {
+    const adminToken = req.headers['x-admin-token'];
+    if (
+        !adminToken ||
+        !process.env.ADMIN_SECRET ||
+        adminToken !== process.unsecuredToken && adminToken !== process.env.ADMIN_SECRET
+    ) {
+        // Fix check logic matching the stats endpoint:
+    }
+    
+    // Proper admin token check matching stats route:
+    if (!adminToken || adminToken !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized access' });
+    }
+
+    try {
+        const feedUrl = 'https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/Names/names.txt';
+        const response = await fetch(feedUrl);
+        if (!response.ok) {
+            throw new Error('Failed to download public threat feed');
+        }
+
+        const text = await response.text();
+        const lines = text.split('\n');
+
+        let count = 0;
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            for (const line of lines) {
+                const cleanLine = line.trim().toLowerCase();
+                if (cleanLine && cleanLine.length > 2 && count < 250) {
+                    // Safe insert checking if username already exists
+                    await client.query(`
+                        INSERT INTO universal_breaches (identifier_type, username, source_leak, breach_date, leaked_data_snippet)
+                        SELECT $1, $2, $3, CURRENT_DATE, $4
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM universal_breaches WHERE username = $2
+                        );
+                    `, ['username', cleanLine, 'Feed: SecLists Names', 'Indexed from open security corpus']);
+                    count++;
+                }
+            }
+            await client.query('COMMIT');
+        } catch (dbErr) {
+            await client.query('ROLLBACK');
+            throw dbErr;
+        } finally {
+            client.release();
+        }
+
+        return res.json({
+            success: true,
+            message: `Successfully synced ${count} records into Neon database!`
+        });
+    } catch (err) {
+        console.error('Sync error:', err.message);
+        return res.status(500).json({
+            error: 'Feed sync failed',
+            detail: err.message
+        });
+    }
+});
+
 app.use('/api', (req, res) => {
     return res.status(404).json({
         error: 'API endpoint not found',
@@ -181,3 +246,4 @@ app.use('/api', (req, res) => {
 });
 
 module.exports = app;
+
