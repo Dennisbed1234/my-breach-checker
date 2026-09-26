@@ -1,0 +1,51 @@
+const express = require('express');
+const path = require('path');
+const serverless = require('serverless-http');
+const db = require('./database');
+
+const app = express();
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+// API Endpoint to check records
+app.post('/api/check', async (req, res) => {
+    const { query } = req.body;
+    
+    if (!query) {
+        return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    const sanitizedQuery = query.trim().toLowerCase();
+    const identifierType = sanitizedQuery.includes('@') ? 'email' : 'phone';
+
+    try {
+        const sql = `SELECT source_leak, breach_date, leaked_data_snippet FROM universal_breaches WHERE identifier_type = $1 AND identifier_value = $2`;
+        const result = await db.query(sql, [identifierType, sanitizedQuery]);
+        
+        if (result.rows.length > 0) {
+            res.json({
+                pwned: true,
+                matches: result.rows.map(r => ({
+                    source: r.source_leak,
+                    date: r.breach_date,
+                    snippet: r.leaked_data_snippet
+                }))
+            });
+        } else {
+            res.json({ pwned: false });
+        }
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Export for local testing and Vercel serverless execution
+if (process.env.NODE_ENV !== 'production') {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => console.log(`Local server running on http://localhost:${PORT}`));
+}
+
+module.exports = handler = serverless(app);
