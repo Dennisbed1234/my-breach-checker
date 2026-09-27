@@ -107,7 +107,7 @@ app.use(async (req, res, next) => {
 });
 
 // ============================================================
-// HELPERS (Case-preserving fingerprint & strict normalization)
+// HELPERS
 // ============================================================
 
 function normalizeIdentifier(value) {
@@ -163,7 +163,7 @@ async function fetchFeed(feed) {
 }
 
 // ============================================================
-// PARSERS
+// PARSERS (Strict & Safe Formats Only)
 // ============================================================
 
 function parseAdobeFeed(text, feed) {
@@ -177,6 +177,7 @@ function parseAdobeFeed(text, feed) {
     const line = rawLine.trim();
     if (!line) continue;
 
+    // Strict tab-delimited check to prevent false positives
     const parts = line.split("\t");
     if (parts.length < 2) {
       skippedLines++;
@@ -228,7 +229,6 @@ function parseGenericFeed(text, feed) {
       records.push({
         identifierType: "email",
         email: value,
-        password: value,
         domain: value.split("@")[1] || null,
         exposureType: "identifier-exposure",
         sourceLeak: feed.name,
@@ -255,7 +255,7 @@ function parseFeed(text, feed) {
 }
 
 // ============================================================
-// HIGH-PERFORMANCE BATCH INSERTION (Fixed ON CONFLICT matching partial index)
+// HIGH-PERFORMANCE BATCH INSERTION
 // ============================================================
 
 async function insertRecords(records) {
@@ -340,7 +340,7 @@ async function insertRecords(records) {
 }
 
 // ============================================================
-// AUTOMATED OSINT SEARCH DISCOVERY WORKER (Google Custom Search Integration)
+// AUTOMATED OSINT SEARCH DISCOVERY WORKER (Strict Raw-File Filter)
 // ============================================================
 
 async function discoverAndIngestFromSearch() {
@@ -351,7 +351,6 @@ async function discoverAndIngestFromSearch() {
     throw new Error("Google Custom Search API credentials (GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID) are not configured.");
   }
 
-  // Target domains matching your CSE configuration
   const targetDomains = [
     "pastebin.com",
     "github.com",
@@ -367,7 +366,7 @@ async function discoverAndIngestFromSearch() {
   for (const domain of targetDomains) {
     for (const keyword of searchKeywords) {
       queriesRun++;
-      const query = `site:${domain} ${keyword}`;
+      const query = `site:${domain} filetype:txt ${keyword}`;
       try {
         const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}`;
         const response = await axios.get(searchUrl, { timeout: 15_000 });
@@ -375,6 +374,12 @@ async function discoverAndIngestFromSearch() {
 
         for (const item of items) {
           const fileUrl = item.link;
+          
+          // Strict check: Only process links explicitly pointing to text files or raw dumps
+          if (!fileUrl.toLowerCase().endsWith(".txt") && !fileUrl.toLowerCase().includes("raw")) {
+            continue;
+          }
+
           try {
             const fileContent = await axios.get(fileUrl, {
               timeout: 10_000,
@@ -383,18 +388,18 @@ async function discoverAndIngestFromSearch() {
             });
 
             const textData = String(fileContent.data || "");
-            if (!textData.trim()) continue;
+            if (!textData.includes("\t")) continue; // Requires valid tab separation
 
             const feedMeta = { 
               name: `OSINT Discovery (${domain}): ${item.title || fileUrl}`, 
-              type: textData.includes("\t") ? "adobe" : "generic" 
+              type: "adobe" 
             };
             
             const parsed = parseFeed(textData, feedMeta);
             const insertResult = await insertRecords(parsed.records);
             totalDiscovered += insertResult.inserted;
           } catch (fetchErr) {
-            // Silently bypass unparseable external destination pages/links
+            // Bypass failed/blocked file fetches silently
           }
         }
       } catch (err) {
@@ -565,7 +570,7 @@ app.get("/api/admin/stats", requireAdmin, async (req, res) => {
 });
 
 // ============================================================
-// ADMIN FEED SYNC (Triggers static feeds AND domain-targeted search discovery)
+// ADMIN FEED SYNC
 // ============================================================
 
 app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
