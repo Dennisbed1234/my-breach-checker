@@ -375,7 +375,6 @@ async function discoverAndIngestFromSearch() {
             maxContentLength: 10 * 1024 * 1024,
           });
 
-          // Automatically determine parser type based on content structure
           const textData = String(fileContent.data || "");
           const feedMeta = { name: `OSINT Discovery: ${item.title || fileUrl}`, type: textData.includes("\t") ? "adobe" : "generic" };
           
@@ -553,7 +552,7 @@ app.get("/api/admin/stats", requireAdmin, async (req, res) => {
 });
 
 // ============================================================
-// ADMIN FEED SYNC
+// ADMIN FEED SYNC (Now triggers static feeds AND Google Search discovery together)
 // ============================================================
 
 app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
@@ -565,6 +564,7 @@ app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
   let totalDuplicates = 0;
   let totalProcessed = 0;
 
+  // 1. Process static feeds
   for (const feed of enabledFeeds) {
     const feedStartedAt = Date.now();
     try {
@@ -598,15 +598,30 @@ app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
     }
   }
 
+  // 2. Trigger Google Custom Search OSINT Discovery automatically during sync
+  let discoveryDetails = null;
+  try {
+    discoveryDetails = await discoverAndIngestFromSearch();
+    totalInserted += discoveryDetails.newRecordsAdded;
+  } catch (discoveryError) {
+    console.error("Discovery execution warning during sync:", discoveryError.message);
+    results.push({
+      name: "Google Custom Search OSINT Worker",
+      status: "error",
+      error: discoveryError.message,
+    });
+  }
+
   const failed = results.filter((result) => result.status === "error");
 
-  res.status(failed.length > 0 ? 207 : 200).json({
-    success: failed.length === 0,
-    message: failed.length === 0 ? "Feed synchronization completed." : `Feed synchronization completed with errors: ${failed.map(f => f.error).join(' | ')}`,
+  res.status(failed.length > 0 && totalInserted === 0 ? 207 : 200).json({
+    success: failed.length === 0 || totalInserted > 0,
+    message: "Feed synchronization and OSINT search discovery cycle completed.",
     durationMs: Date.now() - startedAt,
     totalProcessed,
     totalInserted,
     totalDuplicates,
+    discoveryDetails,
     results,
   });
 });
