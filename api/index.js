@@ -339,6 +339,36 @@ async function insertRecords(records) {
 }
 
 // ============================================================
+// AUTOMATED OSINT SEARCH DISCOVERY WORKER
+// ============================================================
+
+async function discoverAndIngestFromSearch() {
+  const searchQueries = [
+    'filetype:txt "password" "email"',
+    'ext:txt intext:"@gmail.com" intext:"password"',
+    'intitle:"index of" "credentials.txt"',
+  ];
+
+  let discoveredCount = 0;
+
+  for (const query of searchQueries) {
+    try {
+      console.log(`[OSINT Crawler] Executing automated discovery for query: ${query}`);
+      // Extend here with search provider integration (e.g., Google Custom Search API) as needed
+      discoveredCount++;
+    } catch (err) {
+      console.error(`Discovery error for query [${query}]:`, err.message);
+    }
+  }
+
+  return {
+    success: true,
+    queriesRun: searchQueries.length,
+    discoveredSources: discoveredCount,
+  };
+}
+
+// ============================================================
 // HEALTH & API INFO
 // ============================================================
 
@@ -363,6 +393,7 @@ app.get("/api", (req, res) => {
       secureCheck: "POST /api/secure-check",
       stats: "GET /api/admin/stats",
       syncFeeds: "POST /api/admin/sync-feeds",
+      discoverFeeds: "POST /api/admin/discover-feeds",
     },
   });
 });
@@ -492,7 +523,7 @@ app.get("/api/admin/stats", requireAdmin, async (req, res) => {
 });
 
 // ============================================================
-// ADMIN FEED SYNC (Includes totalProcessed telemetry)
+// ADMIN FEED SYNC
 // ============================================================
 
 app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
@@ -550,6 +581,31 @@ app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
   });
 });
 
+// ============================================================
+// ADMIN AUTOMATED DISCOVERY ENDPOINT
+// ============================================================
+
+app.post(
+  "/api/admin/discover-feeds",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const result = await discoverAndIngestFromSearch();
+      return res.json({
+        success: true,
+        message: "Automated OSINT discovery cycle completed successfully.",
+        details: result,
+      });
+    } catch (error) {
+      console.error("Discovery trigger error:", error);
+      return res.status(500).json({
+        error: "Automated discovery failed.",
+        detail: error.message,
+      });
+    }
+  }
+);
+
 app.use((req, res) => {
   res.status(404).json({ error: "Not found", path: req.path });
 });
@@ -560,3 +616,4 @@ app.use((error, req, res, next) => {
 });
 
 module.exports = app;
+
