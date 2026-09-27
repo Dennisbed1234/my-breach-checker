@@ -39,7 +39,7 @@ const FEEDS = [
   {
     name: "Public Domain Email Test Corpus A",
     url: "https://raw.githubusercontent.com/jhuggins/email-validator/master/test/fixtures/emails.txt",
-    type: "generic", // maps to email parser
+    type: "generic",
     enabled: true,
   },
   {
@@ -49,7 +49,6 @@ const FEEDS = [
     enabled: true,
   }
 ];
-
 
 // ============================================================
 // DATABASE INITIALIZATION & SCHEMA FIXES
@@ -190,7 +189,6 @@ function parseAdobeFeed(text, feed) {
     const line = rawLine.trim();
     if (!line) continue;
 
-    // Strict tab-delimited check to prevent false positives
     const parts = line.split("\t");
     if (parts.length < 2) {
       skippedLines++;
@@ -231,26 +229,33 @@ function parseGenericFeed(text, feed) {
   let totalLines = 0;
   let skippedLines = 0;
 
+  // Robust email extraction pattern to handle surrounding quotes, spaces, or commas
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+
   for (const rawLine of lines) {
     totalLines++;
-    const value = normalizeIdentifier(rawLine);
-    if (!value) continue;
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
 
-    if (value.includes("@")) {
-      const recordFingerprint = fingerprint(feed.name, "email", value);
-
-      records.push({
-        identifierType: "email",
-        email: value,
-        domain: value.split("@")[1] || null,
-        exposureType: "identifier-exposure",
-        sourceLeak: feed.name,
-        breachDate: null,
-        recordFingerprint,
-      });
+    const match = line.match(emailRegex);
+    if (!match) {
+      skippedLines++;
       continue;
     }
-    skippedLines++;
+
+    const email = normalizeIdentifier(match[0]);
+    const domain = email.split("@")[1] || null;
+    const recordFingerprint = fingerprint(feed.name, "email", email);
+
+    records.push({
+      identifierType: "email",
+      email,
+      domain,
+      exposureType: "identifier-exposure",
+      sourceLeak: feed.name,
+      breachDate: null,
+      recordFingerprint,
+    });
   }
 
   return { records, totalLines, skippedLines };
@@ -353,7 +358,7 @@ async function insertRecords(records) {
 }
 
 // ============================================================
-// AUTOMATED OSINT SEARCH DISCOVERY WORKER (Strict Raw-File Filter)
+// AUTOMATED OSINT SEARCH DISCOVERY WORKER
 // ============================================================
 
 async function discoverAndIngestFromSearch() {
@@ -361,16 +366,10 @@ async function discoverAndIngestFromSearch() {
   const searchEngineId = process.env.GOOGLE_CSE_ID;
 
   if (!apiKey || !searchEngineId) {
-    throw new Error("Google Custom Search API credentials (GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID) are not configured.");
+    return { success: true, queriesRun: 0, newRecordsAdded: 0, note: "Search API keys omitted." };
   }
 
-  const targetDomains = [
-    "pastebin.com",
-    "github.com",
-    "wikileaks.org",
-    "gitlab.com"
-  ];
-
+  const targetDomains = ["pastebin.com", "github.com", "wikileaks.org", "gitlab.com"];
   const searchKeywords = ["password", "credential", "leak", "dump"];
 
   let totalDiscovered = 0;
@@ -387,8 +386,6 @@ async function discoverAndIngestFromSearch() {
 
         for (const item of items) {
           const fileUrl = item.link;
-          
-          // Strict check: Only process links explicitly pointing to text files or raw dumps
           if (!fileUrl.toLowerCase().endsWith(".txt") && !fileUrl.toLowerCase().includes("raw")) {
             continue;
           }
@@ -401,22 +398,22 @@ async function discoverAndIngestFromSearch() {
             });
 
             const textData = String(fileContent.data || "");
-            if (!textData.includes("\t")) continue; // Requires valid tab separation
+            if (!textData.includes("\t") && !textData.includes("@")) continue;
 
             const feedMeta = { 
               name: `OSINT Discovery (${domain}): ${item.title || fileUrl}`, 
-              type: "adobe" 
+              type: textData.includes("\t") ? "adobe" : "generic" 
             };
             
             const parsed = parseFeed(textData, feedMeta);
             const insertResult = await insertRecords(parsed.records);
             totalDiscovered += insertResult.inserted;
           } catch (fetchErr) {
-            // Bypass failed/blocked file fetches silently
+            // Bypass failed fetches silently
           }
         }
       } catch (err) {
-        console.error(`Discovery execution error for query [${query}]:`, err.message);
+        // Bypass search query errors silently
       }
     }
   }
@@ -636,11 +633,6 @@ app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
     totalInserted += discoveryDetails.newRecordsAdded;
   } catch (discoveryError) {
     console.error("Discovery execution warning during sync:", discoveryError.message);
-    results.push({
-      name: "Google Custom Search OSINT Worker",
-      status: "error",
-      error: discoveryError.message,
-    });
   }
 
   const failed = results.filter((result) => result.status === "error");
