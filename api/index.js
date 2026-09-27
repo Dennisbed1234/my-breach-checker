@@ -39,7 +39,7 @@ const FEEDS = [
 ];
 
 // ============================================================
-// DATABASE INITIALIZATION & CONSTRAINT FIX
+// DATABASE INITIALIZATION & SCHEMA FIXES
 // ============================================================
 
 async function ensureSchema() {
@@ -66,7 +66,6 @@ async function ensureSchema() {
       ADD COLUMN IF NOT EXISTS record_fingerprint TEXT;
   `);
 
-  // Explicitly ensure unique index exists so ON CONFLICT works without errors
   await pool.query(`
     DROP INDEX IF EXISTS universal_breaches_record_fingerprint_uidx;
   `);
@@ -108,19 +107,20 @@ app.use(async (req, res, next) => {
 });
 
 // ============================================================
-// HELPERS
+// HELPERS (Case-preserving fingerprint & strict normalization)
 // ============================================================
 
-function normalize(value) {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase();
+function normalizeIdentifier(value) {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function fingerprint(...parts) {
   return crypto
     .createHash("sha256")
-    .update(parts.map((part) => normalize(part)).join("|"))
+    .update(
+      parts.map((part) => String(part ?? "")).join("|"),
+      "utf8"
+    )
     .digest("hex");
 }
 
@@ -183,7 +183,7 @@ function parseAdobeFeed(text, feed) {
       continue;
     }
 
-    const domain = normalize(parts[0]);
+    const domain = normalizeIdentifier(parts[0]);
     const credentialMaterial = String(parts[1] ?? "").trim();
 
     if (!domain || !credentialMaterial) {
@@ -219,7 +219,7 @@ function parseGenericFeed(text, feed) {
 
   for (const rawLine of lines) {
     totalLines++;
-    const value = normalize(rawLine);
+    const value = normalizeIdentifier(rawLine);
     if (!value) continue;
 
     if (value.includes("@")) {
@@ -254,64 +254,82 @@ function parseFeed(text, feed) {
 }
 
 // ============================================================
-// INSERT FEED RECORDS
+// HIGH-PERFORMANCE BATCH INSERTION (Fixed ON CONFLICT matching partial index)
 // ============================================================
 
 async function insertRecords(records) {
-  const client = await pool.connect();
-  let inserted = 0;
-  let duplicates = 0;
+  if (records.length === 0) return { inserted: 0, duplicates: 0 };
 
+  const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    for (const record of records) {
-      const result = await client.query(
-        `
-        INSERT INTO universal_breaches (
-          identifier_type,
-          first_name,
-          last_name,
-          username,
-          email,
-          password,
-          leaked_data_snippet,
-          source_leak,
-          breach_date,
-          domain,
-          exposure_type,
-          record_fingerprint
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-        ON CONFLICT (record_fingerprint)
-        DO NOTHING
-        RETURNING id
-        `,
-        [
-          record.identifierType || null,
-          record.firstName || null,
-          record.lastName || null,
-          record.username || null,
-          record.email || null,
-          record.password || null,
-          "Credential-related exposure detected.",
-          record.sourceLeak || null,
-          record.breachDate || null,
-          record.domain || null,
-          record.exposureType || null,
-          record.recordFingerprint || null,
-        ]
-      );
+    const identifierTypes = records.map(r => r.identifierType || null);
+    const firstNames = records.map(r => r.firstName || null);
+    const lastNames = records.map(r => r.lastName || null);
+    const usernames = records.map(r => r.username || null);
+    const emails = records.map(r => r.email || null);
+    const passwords = records.map(r => r.password || null);
+    const snippets = records.map(() => "Credential-related exposure detected.");
+    const sources = records.map(r => r.sourceLeak || null);
+    const breachDates = records.map(r => r.breachDate || null);
+    const domains = records.map(r => r.domain || null);
+    const exposureTypes = records.map(r => r.exposureType || null);
+    const fingerprints = records.map(r => r.recordFingerprint || null);
 
-      if (result.rowCount > 0) {
-        inserted++;
-      } else {
-        duplicates++;
-      }
-    }
+    const query = `
+      WITH input_data AS (
+        SELECT * FROM UNNEST(
+          $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], 
+          $6::text[], $7::text[], $8::text[], $9::date[], $10::text[], 
+          $11::text[], $12::text[]
+        ) AS t(
+          identifier_type, first_name, last_name, username, email, 
+          password, leaked_data_snippet, source_leak, breach_date, 
+          domain, exposure_type, record_fingerprint
+        )
+      ),
+      inserted AS (
+        INSERT INTO universal_breaches (
+          identifier_type, first_name, last_name, username, email,
+          password, leaked_data_snippet, source_leak, breach_date,
+          domain, exposure_type, record_fingerprint
+        )
+        SELECT * FROM input_data
+        ON CONFLICT (record_fingerprint) WHERE record_fingerprint IS NOT NULL
+        DO NOTHING
+        RETURNING 1
+      )
+      SELECT 
+        (SELECT COUNT(*) FROM input_data) AS total_input,
+        (SELECT COUNT(*) FROM inserted) AS inserted_count;
+    `;
+
+    const res = await client.query(query, [
+      identifierTypes,
+      firstNames,
+      lastNames,
+      usernames,
+      emails,
+      passwords,
+      snippets,
+      sources,
+      breachDates,
+      domains,
+      exposureTypes,
+      fingerprints,
+    ]);
 
     await client.query("COMMIT");
-    return { inserted, duplicates };
+
+    const totalInput = Number(res.rows[0]?.total_input || 0);
+    const insertedCount = Number(res.rows[0]?.inserted_count || 0);
+    const duplicateCount = totalInput - insertedCount;
+
+    return {
+      inserted: insertedCount,
+      duplicates: duplicateCount,
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -350,10 +368,10 @@ app.get("/api", (req, res) => {
 });
 
 // ============================================================
-// SECURE CHECK
+// SECURE CHECK (Admin-Protected)
 // ============================================================
 
-app.post("/api/secure-check", async (req, res) => {
+app.post("/api/secure-check", requireAdmin, async (req, res) => {
   try {
     const { email, username, first_name, last_name, domain } = req.body || {};
     const fields = { email, username, first_name, last_name, domain };
@@ -377,7 +395,7 @@ app.post("/api/secure-check", async (req, res) => {
     };
 
     const column = columnMap[field];
-    const value = normalize(rawValue);
+    const value = normalizeIdentifier(rawValue);
 
     const result = await pool.query(
       `
@@ -454,8 +472,11 @@ app.get("/api/admin/stats", requireAdmin, async (req, res) => {
       LIMIT 50
     `);
 
+    const totalCount = Number(totalResult.rows[0]?.total || 0);
+
     res.json({
-      total: Number(totalResult.rows[0]?.total || 0),
+      total: totalCount,
+      totalRecords: totalCount,
       breakdown: typeResult.rows || [],
       sources: sourceResult.rows || [],
       topDomains: domainResult.rows || [],
@@ -471,7 +492,7 @@ app.get("/api/admin/stats", requireAdmin, async (req, res) => {
 });
 
 // ============================================================
-// ADMIN FEED SYNC
+// ADMIN FEED SYNC (Includes totalProcessed telemetry)
 // ============================================================
 
 app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
@@ -522,6 +543,7 @@ app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
     success: failed.length === 0,
     message: failed.length === 0 ? "Feed synchronization completed." : `Feed synchronization completed with errors: ${failed.map(f => f.error).join(' | ')}`,
     durationMs: Date.now() - startedAt,
+    totalProcessed,
     totalInserted,
     totalDuplicates,
     results,
