@@ -149,7 +149,7 @@ async function fetchFeed(feed) {
     maxContentLength: 25 * 1024 * 1024,
     maxBodyLength: 25 * 1024 * 1024,
     headers: {
-      "User-Agent": "BreachIntel-Feed-Sync/1.0",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       Accept: "text/plain,text/*,*/*",
     },
     validateStatus: (status) => status >= 200 && status < 300,
@@ -196,7 +196,7 @@ function parseAdobeFeed(text, feed) {
     records.push({
       identifierType: "domain",
       domain,
-      password: credentialMaterial, // Cleanly parsed credential material
+      password: credentialMaterial,
       exposureType: "credential-related",
       sourceLeak: feed.name,
       breachDate: null,
@@ -289,8 +289,8 @@ async function insertRecords(records) {
           record.lastName || null,
           record.username || null,
           record.email || null,
-          record.password || null, // Stored securely in password column
-          "Credential-related exposure detected.", // Clean, non-redundant snippet
+          record.password || null,
+          "Credential-related exposure detected.",
           record.sourceLeak || null,
           record.breachDate || null,
           record.domain || null,
@@ -423,7 +423,7 @@ app.post("/api/secure-check", async (req, res) => {
 });
 
 // ============================================================
-// ADMIN STATS
+// ADMIN STATS (Guaranteed non-NaN numbers)
 // ============================================================
 
 app.get("/api/admin/stats", requireAdmin, async (req, res) => {
@@ -451,13 +451,13 @@ app.get("/api/admin/stats", requireAdmin, async (req, res) => {
     `);
 
     res.json({
-      total: totalResult.rows[0].total,
-      breakdown: typeResult.rows,
-      sources: sourceResult.rows,
-      topDomains: domainResult.rows,
-      recent: recentResult.rows.map(row => ({
+      total: Number(totalResult.rows[0]?.total || 0),
+      breakdown: typeResult.rows || [],
+      sources: sourceResult.rows || [],
+      topDomains: domainResult.rows || [],
+      recent: (recentResult.rows || []).map(row => ({
         ...row,
-        password: row.password
+        password: row.password || ""
       })),
     });
   } catch (error) {
@@ -500,6 +500,7 @@ app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
         durationMs: Date.now() - feedStartedAt,
       });
     } catch (error) {
+      console.error(`Feed sync error for ${feed.name}:`, error.message);
       results.push({
         name: feed.name,
         url: feed.url,
@@ -515,7 +516,7 @@ app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
 
   res.status(failed.length > 0 ? 207 : 200).json({
     success: failed.length === 0,
-    message: failed.length === 0 ? "Feed synchronization completed." : "Feed synchronization completed with errors.",
+    message: failed.length === 0 ? "Feed synchronization completed." : `Feed synchronization completed with errors: ${failed.map(f => f.error).join(' | ')}`,
     durationMs: Date.now() - startedAt,
     totalInserted,
     totalDuplicates,
