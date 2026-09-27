@@ -39,7 +39,7 @@ const FEEDS = [
 ];
 
 // ============================================================
-// DATABASE INITIALIZATION
+// DATABASE INITIALIZATION & CONSTRAINT FIX
 // ============================================================
 
 async function ensureSchema() {
@@ -66,6 +66,17 @@ async function ensureSchema() {
       ADD COLUMN IF NOT EXISTS record_fingerprint TEXT;
   `);
 
+  // Explicitly ensure unique index exists so ON CONFLICT works without errors
+  await pool.query(`
+    DROP INDEX IF EXISTS universal_breaches_record_fingerprint_uidx;
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX universal_breaches_record_fingerprint_uidx
+    ON universal_breaches (record_fingerprint)
+    WHERE record_fingerprint IS NOT NULL;
+  `);
+
   await pool.query(`
     CREATE INDEX IF NOT EXISTS universal_breaches_email_idx
     ON universal_breaches (LOWER(email));
@@ -79,13 +90,6 @@ async function ensureSchema() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS universal_breaches_domain_idx
     ON universal_breaches (LOWER(domain));
-  `);
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS
-      universal_breaches_record_fingerprint_uidx
-    ON universal_breaches (record_fingerprint)
-    WHERE record_fingerprint IS NOT NULL;
   `);
 }
 
@@ -423,7 +427,7 @@ app.post("/api/secure-check", async (req, res) => {
 });
 
 // ============================================================
-// ADMIN STATS (Guaranteed non-NaN numbers)
+// ADMIN STATS
 // ============================================================
 
 app.get("/api/admin/stats", requireAdmin, async (req, res) => {
