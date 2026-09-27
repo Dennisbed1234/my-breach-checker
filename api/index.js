@@ -228,6 +228,7 @@ function parseGenericFeed(text, feed) {
       records.push({
         identifierType: "email",
         email: value,
+        password: value,
         domain: value.split("@")[1] || null,
         exposureType: "identifier-exposure",
         sourceLeak: feed.name,
