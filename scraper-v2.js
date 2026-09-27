@@ -9,9 +9,10 @@ const pool = new Pool({
 
 const EXPANDED_FEED_URLS = [
     {
-        name: 'SecLists Usernames & Aliases',
-        url: 'https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/Names/names.txt',
-        type: 'username'
+        name: 'webmit Usernames & Aliases',
+        url: 'https://web.mit.edu/zyan/Public/adobe_sanitized_passwords_with_bad_hints.txtUsernames/Names/names.txt',
+        type: 'email'
+        type: 'password'
     },
     {
         name: 'Public Domain Email Test Corpus A',
