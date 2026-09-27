@@ -37,15 +37,9 @@ const FEEDS = [
     enabled: true,
   },
   {
-    name: "Public Domain Email Test Corpus A",
-    url: "https://raw.githubusercontent.com/jhuggins/email-validator/master/test/fixtures/emails.txt",
-    type: "generic",
-    enabled: true,
-  },
-  {
-    name: "Open Source Security Feed Archive Alpha",
-    url: "https://raw.githubusercontent.com/audibleblink/some-sample-lists/master/emails.txt",
-    type: "generic",
+    name: "SecLists Valid Email Corpus Alpha",
+    url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/top-usernames-shortlist.txt",
+    type: "generic", // Automatically extracts and saves valid identifiers/emails using your generic parser
     enabled: true,
   }
 ];
