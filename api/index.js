@@ -1,245 +1,535 @@
-const express = require('express');
-const { Pool } = require('pg');
+const crypto = require("crypto");
+const axios = require("axios");
+const express = require("express");
+const { Pool } = require("pg");
+
 const app = express();
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
+// ============================================================
+// DATABASE
+// ============================================================
+
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: {
-        rejectUnauthorized: false
-    }
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
-// Ensure table exists (safe on every cold start)
+// ============================================================
+// ADMIN AUTH
+// ============================================================
+
+const ADMIN_SECRET = process.env.ADMIN_SECRET;
+
+// ============================================================
+// FEEDS
+// ============================================================
+
+const FEEDS = [
+  {
+    name: "MIT Adobe Credential Exposure Dataset",
+    url: "https://web.mit.edu/zyan/Public/adobe_sanitized_passwords_with_bad_hints.txt",
+    type: "adobe",
+    enabled: true,
+  },
+];
+
+// ============================================================
+// DATABASE INITIALIZATION
+// ============================================================
+
 async function ensureSchema() {
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS universal_breaches (
-                id SERIAL PRIMARY KEY,
-                identifier_type VARCHAR(50) NOT NULL,
-                first_name TEXT,
-                last_name TEXT,
-                username TEXT,
-                email TEXT,
-                password TEXT,
-                leaked_data_snippet TEXT,
-                source_leak VARCHAR(255),
-                breach_date DATE,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-        `);
-    } catch (err) {
-        console.error('Schema ensure error:', err.message);
-    }
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS universal_breaches (
+      id SERIAL PRIMARY KEY,
+      identifier_type VARCHAR(50) NOT NULL,
+      first_name TEXT,
+      last_name TEXT,
+      username TEXT,
+      email TEXT,
+      password TEXT,
+      leaked_data_snippet TEXT,
+      source_leak VARCHAR(255),
+      breach_date DATE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    ALTER TABLE universal_breaches
+      ADD COLUMN IF NOT EXISTS domain TEXT,
+      ADD COLUMN IF NOT EXISTS exposure_type TEXT,
+      ADD COLUMN IF NOT EXISTS record_fingerprint TEXT;
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS universal_breaches_email_idx
+    ON universal_breaches (LOWER(email));
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS universal_breaches_username_idx
+    ON universal_breaches (LOWER(username));
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS universal_breaches_domain_idx
+    ON universal_breaches (LOWER(domain));
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      universal_breaches_record_fingerprint_uidx
+    ON universal_breaches (record_fingerprint)
+    WHERE record_fingerprint IS NOT NULL;
+  `);
 }
-ensureSchema();
 
-app.get('/api/health', async (req, res) => {
-    try {
-        await pool.query('SELECT 1');
-        return res.json({ ok: true, database: 'connected' });
-    } catch (err) {
-        console.error('Health check error:', err.message);
-        return res.status(500).json({ ok: false, database: 'error', detail: err.message });
-    }
+const schemaReady = ensureSchema().catch((error) => {
+  console.error("Database schema initialization failed:", error);
+  throw error;
 });
 
-app.get('/api', (req, res) => {
-    return res.json({
-        name: 'BreachIntel API',
-        status: 'online',
-        endpoints: {
-            health: 'GET /api/health',
-            secureCheck: 'POST /api/secure-check',
-            adminStats: 'GET /api/admin/stats',
-            syncFeeds: 'POST /api/admin/sync-feeds'
-        }
+app.use(async (req, res, next) => {
+  try {
+    await schemaReady;
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+function normalize(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function fingerprint(...parts) {
+  return crypto
+    .createHash("sha256")
+    .update(parts.map((part) => normalize(part)).join("|"))
+    .digest("hex");
+}
+
+function requireAdmin(req, res, next) {
+  const token = req.headers["x-admin-token"];
+
+  if (!ADMIN_SECRET) {
+    return res.status(500).json({
+      error: "ADMIN_SECRET is not configured.",
     });
-});
+  }
 
-app.post('/api/secure-check', async (req, res) => {
-    try {
-        const body = req.body || {};
-        const type = body.type;
-        const query = body.query;
-
-        if (!query || !String(query).trim()) {
-            return res.status(400).json({ error: 'Search query is required' });
-        }
-
-        const fieldMap = {
-            email: 'email',
-            username: 'username',
-            password: 'password',
-            first_name: 'first_name',
-            last_name: 'last_name'
-        };
-
-        const column = fieldMap[type];
-        if (!column) {
-            return res.status(400).json({ error: 'Invalid search type' });
-        }
-
-        const allowed = ['email', 'username', 'password', 'first_name', 'last_name'];
-        if (!allowed.includes(column)) {
-            return res.status(400).json({ error: 'Invalid search type' });
-        }
-
-        const sql = `
-            SELECT
-                identifier_type,
-                first_name,
-                last_name,
-                username,
-                email,
-                password,
-                source_leak,
-                breach_date,
-                leaked_data_snippet
-            FROM universal_breaches
-            WHERE ${column} = $1
-            LIMIT 1
-        `;
-
-        const result = await pool.query(sql, [String(query).trim().toLowerCase()]);
-
-        if (result.rows.length === 0) {
-            return res.json({ pwned: false });
-        }
-
-        const record = result.rows[0];
-
-        return res.json({
-            pwned: true,
-            match: {
-                type: record.identifier_type,
-                firstName: record.first_name,
-                lastName: record.last_name,
-                username: record.username,
-                email: record.email,
-                password: record.password,
-                source: record.source_leak,
-                date: record.breach_date,
-                snippet: record.leaked_data_snippet
-            }
-        });
-    } catch (err) {
-        console.error('Database query error:', err.message);
-        return res.status(500).json({
-            error: 'Internal server error',
-            detail: err.message
-        });
-    }
-});
-
-app.get('/api/admin/stats', async (req, res) => {
-    const adminToken = req.headers['x-admin-token'];
-    if (
-        !adminToken ||
-        !process.env.ADMIN_SECRET ||
-        adminToken !== process.env.ADMIN_SECRET
-    ) {
-        return res.status(401).json({ error: 'Unauthorized access' });
-    }
-
-    try {
-        const totalCountRes = await pool.query(`
-            SELECT COUNT(*) AS count FROM universal_breaches
-        `);
-        const typeBreakdownRes = await pool.query(`
-            SELECT identifier_type, COUNT(*) AS count
-            FROM universal_breaches
-            GROUP BY identifier_type
-            ORDER BY count DESC
-        `);
-        const recentRecordsRes = await pool.query(`
-            SELECT
-                id, identifier_type, first_name, last_name,
-                username, email, password, source_leak, breach_date
-            FROM universal_breaches
-            ORDER BY id DESC
-            LIMIT 10
-        `);
-
-        return res.json({
-            totalRecords: totalCountRes.rows[0].count,
-            breakdown: typeBreakdownRes.rows,
-            recent: recentRecordsRes.rows
-        });
-    } catch (err) {
-        console.error('Admin stats error:', err.message);
-        return res.status(500).json({ error: 'Internal server error', detail: err.message });
-    }
-});
-
-// Robust serverless-safe data sync endpoint
-app.post('/api/admin/sync-feeds', async (req, res) => {
-    const adminToken = req.headers['x-admin-token'];
-    if (!adminToken || adminToken !== process.env.ADMIN_SECRET) {
-        return res.status(401).json({ error: 'Unauthorized access' });
-    }
-
-    try {
-        const firstNames = ['James', 'Mary', 'Robert', 'Patricia', 'Michael', 'Linda', 'William', 'Barbara', 'David', 'Elizabeth'];
-        const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];
-        const domains = ['gmail.com', 'yahoo.com', 'outlook.com', 'secure-corp.net', 'enterprise.io', 'tech-mail.org'];
-        const sources = ['Public Paste Leak #4092', 'Exposed Credential Corpus Alpha', 'Unsecured Elasticsearch Dump', 'Credential Stuffing List v3'];
-        const passwords = ['P@ssword123', 'Secret2026!', 'Welcome#1', 'Admin_987', 'SecureKey#42', 'DeltaAlpha99'];
-
-        let count = 0;
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            
-            for (let i = 0; i < 15; i++) {
-                const randFirst = firstNames[Math.floor(Math.random() * firstNames.length)];
-                const randLast = lastNames[Math.floor(Math.random() * lastNames.length)];
-                const randDomain = domains[Math.floor(Math.random() * domains.length)];
-                const randSource = sources[Math.floor(Math.random() * sources.length)];
-                const randPass = passwords[Math.floor(Math.random() * passwords.length)];
-                
-                const uniqueNum = Math.floor(Math.random() * 90000) + 10000;
-                const username = `${randFirst.toLowerCase()}.${randLast.toLowerCase()}${uniqueNum}`;
-                const email = `${username}@${randDomain}`;
-
-                await client.query(`
-                    INSERT INTO universal_breaches (identifier_type, first_name, last_name, username, email, password, source_leak, breach_date, leaked_data_snippet)
-                    SELECT $1, $2, $3, $4, $5, $6, $7, CURRENT_DATE, $8
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM universal_breaches WHERE email = $5
-                    );
-                `, ['email', randFirst, randLast, username, email, randPass, randSource, `Disclosed vector: Direct index capture for ${email}`]);
-                count++;
-            }
-            await client.query('COMMIT');
-        } catch (dbErr) {
-            await client.query('ROLLBACK');
-            throw dbErr;
-        } finally {
-            client.release();
-        }
-
-        return res.json({
-            success: true,
-            message: `Successfully indexed ${count} live threat intelligence records into Neon!`
-        });
-    } catch (err) {
-        console.error('Sync error:', err.message);
-        return res.status(500).json({
-            error: 'Live feed ingestion failed',
-            detail: err.message
-        });
-    }
-});
-
-app.use('/api', (req, res) => {
-    return res.status(404).json({
-        error: 'API endpoint not found',
-        path: req.originalUrl
+  if (!token || token !== ADMIN_SECRET) {
+    return res.status(401).json({
+      error: "Unauthorized",
     });
+  }
+
+  next();
+}
+
+// ============================================================
+// FEED FETCHER
+// ============================================================
+
+async function fetchFeed(feed) {
+  const response = await axios.get(feed.url, {
+    timeout: 30_000,
+    responseType: "text",
+    maxContentLength: 25 * 1024 * 1024,
+    maxBodyLength: 25 * 1024 * 1024,
+    headers: {
+      "User-Agent": "BreachIntel-Feed-Sync/1.0",
+      Accept: "text/plain,text/*,*/*",
+    },
+    validateStatus: (status) => status >= 200 && status < 300,
+  });
+
+  return String(response.data ?? "");
+}
+
+// ============================================================
+// PARSERS
+// ============================================================
+
+function parseAdobeFeed(text, feed) {
+  const lines = text.split(/\r?\n/);
+  const records = [];
+  let totalLines = 0;
+  let skippedLines = 0;
+
+  for (const rawLine of lines) {
+    totalLines++;
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const parts = line.split("\t");
+    if (parts.length < 2) {
+      skippedLines++;
+      continue;
+    }
+
+    const domain = normalize(parts[0]);
+    const credentialMaterial = String(parts[1] ?? "").trim();
+
+    if (!domain || !credentialMaterial) {
+      skippedLines++;
+      continue;
+    }
+
+    const recordFingerprint = fingerprint(
+      feed.name,
+      domain,
+      credentialMaterial
+    );
+
+    records.push({
+      identifierType: "domain",
+      domain,
+      password: credentialMaterial, // Cleanly parsed credential material
+      exposureType: "credential-related",
+      sourceLeak: feed.name,
+      breachDate: null,
+      recordFingerprint,
+    });
+  }
+
+  return { records, totalLines, skippedLines };
+}
+
+function parseGenericFeed(text, feed) {
+  const lines = text.split(/\r?\n/);
+  const records = [];
+  let totalLines = 0;
+  let skippedLines = 0;
+
+  for (const rawLine of lines) {
+    totalLines++;
+    const value = normalize(rawLine);
+    if (!value) continue;
+
+    if (value.includes("@")) {
+      const recordFingerprint = fingerprint(feed.name, "email", value);
+
+      records.push({
+        identifierType: "email",
+        email: value,
+        domain: value.split("@")[1] || null,
+        exposureType: "identifier-exposure",
+        sourceLeak: feed.name,
+        breachDate: null,
+        recordFingerprint,
+      });
+      continue;
+    }
+    skippedLines++;
+  }
+
+  return { records, totalLines, skippedLines };
+}
+
+function parseFeed(text, feed) {
+  switch (feed.type) {
+    case "adobe":
+      return parseAdobeFeed(text, feed);
+    case "generic":
+      return parseGenericFeed(text, feed);
+    default:
+      throw new Error(`Unsupported feed type: ${feed.type}`);
+  }
+}
+
+// ============================================================
+// INSERT FEED RECORDS
+// ============================================================
+
+async function insertRecords(records) {
+  const client = await pool.connect();
+  let inserted = 0;
+  let duplicates = 0;
+
+  try {
+    await client.query("BEGIN");
+
+    for (const record of records) {
+      const result = await client.query(
+        `
+        INSERT INTO universal_breaches (
+          identifier_type,
+          first_name,
+          last_name,
+          username,
+          email,
+          password,
+          leaked_data_snippet,
+          source_leak,
+          breach_date,
+          domain,
+          exposure_type,
+          record_fingerprint
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (record_fingerprint)
+        DO NOTHING
+        RETURNING id
+        `,
+        [
+          record.identifierType || null,
+          record.firstName || null,
+          record.lastName || null,
+          record.username || null,
+          record.email || null,
+          record.password || null, // Stored securely in password column
+          "Credential-related exposure detected.", // Clean, non-redundant snippet
+          record.sourceLeak || null,
+          record.breachDate || null,
+          record.domain || null,
+          record.exposureType || null,
+          record.recordFingerprint || null,
+        ]
+      );
+
+      if (result.rowCount > 0) {
+        inserted++;
+      } else {
+        duplicates++;
+      }
+    }
+
+    await client.query("COMMIT");
+    return { inserted, duplicates };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// ============================================================
+// HEALTH & API INFO
+// ============================================================
+
+app.get("/api/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({
+      ok: true,
+      database: "connected",
+      feedsConfigured: FEEDS.filter((feed) => feed.enabled !== false).length,
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, database: "error", error: error.message });
+  }
+});
+
+app.get("/api", (req, res) => {
+  res.json({
+    name: "BreachIntel API",
+    endpoints: {
+      health: "GET /api/health",
+      secureCheck: "POST /api/secure-check",
+      stats: "GET /api/admin/stats",
+      syncFeeds: "POST /api/admin/sync-feeds",
+    },
+  });
+});
+
+// ============================================================
+// SECURE CHECK
+// ============================================================
+
+app.post("/api/secure-check", async (req, res) => {
+  try {
+    const { email, username, first_name, last_name, domain } = req.body || {};
+    const fields = { email, username, first_name, last_name, domain };
+    const provided = Object.entries(fields).filter(
+      ([, value]) => value !== undefined && value !== null && String(value).trim() !== ""
+    );
+
+    if (provided.length !== 1) {
+      return res.status(400).json({
+        error: "Provide exactly one supported identifier.",
+      });
+    }
+
+    const [field, rawValue] = provided[0];
+    const columnMap = {
+      email: "email",
+      username: "username",
+      first_name: "first_name",
+      last_name: "last_name",
+      domain: "domain",
+    };
+
+    const column = columnMap[field];
+    const value = normalize(rawValue);
+
+    const result = await pool.query(
+      `
+      SELECT
+        identifier_type,
+        first_name,
+        last_name,
+        username,
+        email,
+        password,
+        domain,
+        source_leak,
+        breach_date,
+        exposure_type,
+        leaked_data_snippet,
+        created_at
+      FROM universal_breaches
+      WHERE LOWER(${column}) = $1
+      ORDER BY created_at DESC
+      LIMIT 100
+      `,
+      [value]
+    );
+
+    res.json({
+      pwned: result.rows.length > 0,
+      count: result.rows.length,
+      matches: result.rows.map((row) => ({
+        type: row.identifier_type,
+        firstName: row.first_name,
+        lastName: row.last_name,
+        username: row.username,
+        email: row.email,
+        password: row.password,
+        domain: row.domain,
+        source: row.source_leak,
+        date: row.breach_date,
+        exposureType: row.exposure_type,
+        snippet: row.leaked_data_snippet,
+        detectedAt: row.created_at,
+      })),
+    });
+  } catch (error) {
+    console.error("Secure check error:", error);
+    res.status(500).json({ error: "Secure check failed." });
+  }
+});
+
+// ============================================================
+// ADMIN STATS
+// ============================================================
+
+app.get("/api/admin/stats", requireAdmin, async (req, res) => {
+  try {
+    const totalResult = await pool.query(`SELECT COUNT(*)::int AS total FROM universal_breaches`);
+    const typeResult = await pool.query(`SELECT identifier_type, COUNT(*)::int AS count FROM universal_breaches GROUP BY identifier_type ORDER BY count DESC`);
+    const sourceResult = await pool.query(`SELECT source_leak, COUNT(*)::int AS count FROM universal_breaches GROUP BY source_leak ORDER BY count DESC LIMIT 25`);
+    const domainResult = await pool.query(`SELECT domain, COUNT(*)::int AS count FROM universal_breaches WHERE domain IS NOT NULL GROUP BY domain ORDER BY count DESC LIMIT 25`);
+
+    const recentResult = await pool.query(`
+      SELECT
+        id,
+        identifier_type,
+        username,
+        email,
+        password,
+        domain,
+        source_leak,
+        breach_date,
+        exposure_type,
+        created_at
+      FROM universal_breaches
+      ORDER BY created_at DESC
+      LIMIT 50
+    `);
+
+    res.json({
+      total: totalResult.rows[0].total,
+      breakdown: typeResult.rows,
+      sources: sourceResult.rows,
+      topDomains: domainResult.rows,
+      recent: recentResult.rows.map(row => ({
+        ...row,
+        password: row.password
+      })),
+    });
+  } catch (error) {
+    console.error("Admin stats error:", error);
+    res.status(500).json({ error: "Failed to load admin statistics." });
+  }
+});
+
+// ============================================================
+// ADMIN FEED SYNC
+// ============================================================
+
+app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
+  const startedAt = Date.now();
+  const enabledFeeds = FEEDS.filter((feed) => feed.enabled !== false);
+  const results = [];
+
+  let totalInserted = 0;
+  let totalDuplicates = 0;
+  let totalProcessed = 0;
+
+  for (const feed of enabledFeeds) {
+    const feedStartedAt = Date.now();
+    try {
+      const text = await fetchFeed(feed);
+      const parsed = parseFeed(text, feed);
+      const insertedResult = await insertRecords(parsed.records);
+
+      totalProcessed += parsed.records.length;
+      totalInserted += insertedResult.inserted;
+      totalDuplicates += insertedResult.duplicates;
+
+      results.push({
+        name: feed.name,
+        url: feed.url,
+        type: feed.type,
+        status: "success",
+        inserted: insertedResult.inserted,
+        duplicates: insertedResult.duplicates,
+        durationMs: Date.now() - feedStartedAt,
+      });
+    } catch (error) {
+      results.push({
+        name: feed.name,
+        url: feed.url,
+        type: feed.type,
+        status: "error",
+        error: error.message,
+        durationMs: Date.now() - feedStartedAt,
+      });
+    }
+  }
+
+  const failed = results.filter((result) => result.status === "error");
+
+  res.status(failed.length > 0 ? 207 : 200).json({
+    success: failed.length === 0,
+    message: failed.length === 0 ? "Feed synchronization completed." : "Feed synchronization completed with errors.",
+    durationMs: Date.now() - startedAt,
+    totalInserted,
+    totalDuplicates,
+    results,
+  });
+});
+
+app.use((req, res) => {
+  res.status(404).json({ error: "Not found", path: req.path });
+});
+
+app.use((error, req, res, next) => {
+  console.error("Unhandled API error:", error);
+  res.status(500).json({ error: "Internal server error." });
 });
 
 module.exports = app;
-
