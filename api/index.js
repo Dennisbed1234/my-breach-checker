@@ -37,12 +37,19 @@ const FEEDS = [
     enabled: true,
   },
   {
-    name: "Email/Credential Test Corpus",
-    url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/Names/names.txt", // Swap this URL with any raw text feed containing emails/passwords
-    type: "generic",
-    enabled: false, // Flip to true once you point the URL to an email list
+    name: "Public Domain Email Test Corpus A",
+    url: "https://raw.githubusercontent.com/jhuggins/email-validator/master/test/fixtures/emails.txt",
+    type: "generic", // maps to email parser
+    enabled: true,
   },
+  {
+    name: "Open Source Security Feed Archive Alpha",
+    url: "https://raw.githubusercontent.com/audibleblink/some-sample-lists/master/emails.txt",
+    type: "generic",
+    enabled: true,
+  }
 ];
+
 
 // ============================================================
 // DATABASE INITIALIZATION & SCHEMA FIXES
