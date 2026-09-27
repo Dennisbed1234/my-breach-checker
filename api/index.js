@@ -339,32 +339,62 @@ async function insertRecords(records) {
 }
 
 // ============================================================
-// AUTOMATED OSINT SEARCH DISCOVERY WORKER
+// AUTOMATED OSINT SEARCH DISCOVERY WORKER (Google Custom Search Integration)
 // ============================================================
 
 async function discoverAndIngestFromSearch() {
+  const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
+  const searchEngineId = process.env.GOOGLE_CSE_ID;
+
+  if (!apiKey || !searchEngineId) {
+    throw new Error("Google Custom Search API credentials (GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID) are not configured.");
+  }
+
   const searchQueries = [
     'filetype:txt "password" "email"',
     'ext:txt intext:"@gmail.com" intext:"password"',
     'intitle:"index of" "credentials.txt"',
   ];
 
-  let discoveredCount = 0;
+  let totalDiscovered = 0;
+  let queriesRun = 0;
 
   for (const query of searchQueries) {
+    queriesRun++;
     try {
-      console.log(`[OSINT Crawler] Executing automated discovery for query: ${query}`);
-      // Extend here with search provider integration (e.g., Google Custom Search API) as needed
-      discoveredCount++;
+      const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}`;
+      const response = await axios.get(searchUrl, { timeout: 15_000 });
+      const items = response.data.items || [];
+
+      for (const item of items) {
+        const fileUrl = item.link;
+        try {
+          const fileContent = await axios.get(fileUrl, {
+            timeout: 10_000,
+            responseType: "text",
+            maxContentLength: 10 * 1024 * 1024,
+          });
+
+          // Automatically determine parser type based on content structure
+          const textData = String(fileContent.data || "");
+          const feedMeta = { name: `OSINT Discovery: ${item.title || fileUrl}`, type: textData.includes("\t") ? "adobe" : "generic" };
+          
+          const parsed = parseFeed(textData, feedMeta);
+          const insertResult = await insertRecords(parsed.records);
+          totalDiscovered += insertResult.inserted;
+        } catch (fetchErr) {
+          console.error(`Failed to fetch/parse target URL [${fileUrl}]:`, fetchErr.message);
+        }
+      }
     } catch (err) {
-      console.error(`Discovery error for query [${query}]:`, err.message);
+      console.error(`Discovery execution error for query [${query}]:`, err.message);
     }
   }
 
   return {
     success: true,
-    queriesRun: searchQueries.length,
-    discoveredSources: discoveredCount,
+    queriesRun,
+    newRecordsAdded: totalDiscovered,
   };
 }
 
@@ -612,7 +642,10 @@ app.use((req, res) => {
 
 app.use((error, req, res, next) => {
   console.error("Unhandled API error:", error);
-  res.status(500).json({ error: "Internal server error." });
+
+  res.status(500).json({
+    error: "Internal server error.",
+  });
 });
 
 module.exports = app;
