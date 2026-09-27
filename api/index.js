@@ -350,43 +350,55 @@ async function discoverAndIngestFromSearch() {
     throw new Error("Google Custom Search API credentials (GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID) are not configured.");
   }
 
-  const searchQueries = [
-    'filetype:txt "password" "email"',
-    'ext:txt intext:"@gmail.com" intext:"password"',
-    'intitle:"index of" "credentials.txt"',
+  // Target domains matching your CSE configuration
+  const targetDomains = [
+    "pastebin.com",
+    "github.com",
+    "wikileaks.org",
+    "gitlab.com"
   ];
+
+  const searchKeywords = ["password", "credential", "leak", "dump"];
 
   let totalDiscovered = 0;
   let queriesRun = 0;
 
-  for (const query of searchQueries) {
-    queriesRun++;
-    try {
-      const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}`;
-      const response = await axios.get(searchUrl, { timeout: 15_000 });
-      const items = response.data.items || [];
+  for (const domain of targetDomains) {
+    for (const keyword of searchKeywords) {
+      queriesRun++;
+      const query = `site:${domain} ${keyword}`;
+      try {
+        const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}`;
+        const response = await axios.get(searchUrl, { timeout: 15_000 });
+        const items = response.data.items || [];
 
-      for (const item of items) {
-        const fileUrl = item.link;
-        try {
-          const fileContent = await axios.get(fileUrl, {
-            timeout: 10_000,
-            responseType: "text",
-            maxContentLength: 10 * 1024 * 1024,
-          });
+        for (const item of items) {
+          const fileUrl = item.link;
+          try {
+            const fileContent = await axios.get(fileUrl, {
+              timeout: 10_000,
+              responseType: "text",
+              maxContentLength: 10 * 1024 * 1024,
+            });
 
-          const textData = String(fileContent.data || "");
-          const feedMeta = { name: `OSINT Discovery: ${item.title || fileUrl}`, type: textData.includes("\t") ? "adobe" : "generic" };
-          
-          const parsed = parseFeed(textData, feedMeta);
-          const insertResult = await insertRecords(parsed.records);
-          totalDiscovered += insertResult.inserted;
-        } catch (fetchErr) {
-          console.error(`Failed to fetch/parse target URL [${fileUrl}]:`, fetchErr.message);
+            const textData = String(fileContent.data || "");
+            if (!textData.trim()) continue;
+
+            const feedMeta = { 
+              name: `OSINT Discovery (${domain}): ${item.title || fileUrl}`, 
+              type: textData.includes("\t") ? "adobe" : "generic" 
+            };
+            
+            const parsed = parseFeed(textData, feedMeta);
+            const insertResult = await insertRecords(parsed.records);
+            totalDiscovered += insertResult.inserted;
+          } catch (fetchErr) {
+            // Silently bypass unparseable external destination pages/links
+          }
         }
+      } catch (err) {
+        console.error(`Discovery execution error for query [${query}]:`, err.message);
       }
-    } catch (err) {
-      console.error(`Discovery execution error for query [${query}]:`, err.message);
     }
   }
 
@@ -552,7 +564,7 @@ app.get("/api/admin/stats", requireAdmin, async (req, res) => {
 });
 
 // ============================================================
-// ADMIN FEED SYNC (Now triggers static feeds AND Google Search discovery together)
+// ADMIN FEED SYNC (Triggers static feeds AND domain-targeted search discovery)
 // ============================================================
 
 app.post("/api/admin/sync-feeds", requireAdmin, async (req, res) => {
@@ -664,4 +676,3 @@ app.use((error, req, res, next) => {
 });
 
 module.exports = app;
-
