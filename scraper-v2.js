@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const axios = require('axios');
 const readline = require('readline');
 const { Pool } = require('pg');
@@ -9,10 +10,9 @@ const pool = new Pool({
 
 const EXPANDED_FEED_URLS = [
     {
-        name: 'webmit Usernames & Aliases',
-        url: 'https://web.mit.edu/zyan/Public/adobe_sanitized_passwords_with_bad_hints.txtUsernames/Names/names.txt',
-        type: 'email'
-        type: 'password'
+        name: 'MIT Adobe Credential Exposure Dataset',
+        url: 'https://web.mit.edu/zyan/Public/adobe_sanitized_passwords_with_bad_hints.txt',
+        type: 'adobe'
     },
     {
         name: 'Public Domain Email Test Corpus A',
@@ -27,6 +27,13 @@ const EXPANDED_FEED_URLS = [
 ];
 
 const BATCH_SIZE = 2000;
+
+function fingerprint(...parts) {
+    return crypto
+        .createHash("sha256")
+        .update(parts.map((part) => String(part ?? "")).join("|"), "utf8")
+        .digest("hex");
+}
 
 async function runAggregatedIngestion() {
     console.log('[*] Initializing Mass Threat Intelligence Ingestion Pipeline...');
@@ -44,7 +51,7 @@ async function runAggregatedIngestion() {
                 timeout: 60000
             });
 
-            await processFeedStream(response.data, feed.name, feed.type);
+            await processFeedStream(response.data, feed);
         } catch (error) {
             console.error(`[!] Failed to pull from [${feed.name}]: ${error.message}`);
         }
@@ -55,7 +62,7 @@ async function runAggregatedIngestion() {
     await pool.end();
 }
 
-async function processFeedStream(inputStream, sourceLabel, defaultType) {
+async function processFeedStream(inputStream, feed) {
     const rl = readline.createInterface({
         input: inputStream,
         crlfDelay: Infinity
@@ -73,75 +80,96 @@ async function processFeedStream(inputStream, sourceLabel, defaultType) {
 
         if (!cleanLine || cleanLine.startsWith('#')) continue;
 
-        let identifierType = null;
-        let identifierValue = null;
-
-        if (emailRegex.test(cleanLine)) {
-            identifierType = 'email';
-            identifierValue = cleanLine.toLowerCase();
-        } else if (defaultType === 'username' && cleanLine.length > 2) {
-            identifierType = 'username';
-            identifierValue = cleanLine.toLowerCase();
-        }
-
-        if (identifierType && identifierValue) {
+        if (feed.type === 'adobe') {
+            const parts = cleanLine.split('\t');
+            if (parts.length >= 2) {
+                const domain = parts[0].trim().toLowerCase();
+                const password = parts[1].trim();
+                if (domain && password) {
+                    const recordFingerprint = fingerprint(feed.name, domain, password);
+                    batch.push({
+                        identifierType: 'domain',
+                        domain,
+                        password,
+                        sourceLeak: feed.name,
+                        recordFingerprint
+                    });
+                }
+            }
+        } else if (feed.type === 'email' && emailRegex.test(cleanLine)) {
+            const email = cleanLine.toLowerCase();
+            const domain = email.split('@')[1] || null;
+            const recordFingerprint = fingerprint(feed.name, 'email', email);
             batch.push({
-                type: identifierType,
-                value: identifierValue,
-                snippet: 'Indexed from active threat feed'
+                identifierType: 'email',
+                email,
+                domain,
+                sourceLeak: feed.name,
+                recordFingerprint
             });
         }
 
         if (batch.length >= BATCH_SIZE) {
-            await insertBatchToDatabase(batch, sourceLabel);
-            totalInserted += batch.length;
+            const insertedCount = await insertBatchToDatabase(batch);
+            totalInserted += insertedCount;
             batch = [];
             process.stdout.write(`\r[+] Processed lines: ${totalProcessed} | Indexed records: ${totalInserted}`);
         }
     }
 
     if (batch.length > 0) {
-        await insertBatchToDatabase(batch, sourceLabel);
-        totalInserted += batch.length;
+        const insertedCount = await insertBatchToDatabase(batch);
+        totalInserted += insertedCount;
     }
 
-    console.log(`\n[✔] Finished [${sourceLabel}] -> Scanned: ${totalProcessed}, Saved: ${totalInserted}`);
+    console.log(`\n[✔] Finished [${feed.name}] -> Scanned: ${totalProcessed}, Saved: ${totalInserted}`);
 }
 
-async function insertBatchToDatabase(records, sourceLabel) {
+async function insertBatchToDatabase(records) {
+    if (records.length === 0) return 0;
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        const queryText = `
-            INSERT INTO universal_breaches (
-                identifier_type,
-                email,
-                username,
-                leaked_data_snippet,
-                source_leak,
-                breach_date
-            )
-            VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)
-        `;
-
+        let insertedTotal = 0;
         for (const rec of records) {
-            const email = rec.type === 'email' ? rec.value : null;
-            const username = rec.type === 'username' ? rec.value : null;
-
-            await client.query(queryText, [
-                rec.type,
-                email,
-                username,
-                rec.snippet || 'Indexed from feed',
-                `Feed: ${sourceLabel}`
-            ]);
+            const res = await client.query(
+                `
+                INSERT INTO universal_breaches (
+                    identifier_type,
+                    email,
+                    domain,
+                    password,
+                    leaked_data_snippet,
+                    source_leak,
+                    breach_date,
+                    record_fingerprint
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE, $7)
+                ON CONFLICT (record_fingerprint) WHERE record_fingerprint IS NOT NULL
+                DO NOTHING
+                RETURNING 1
+                `,
+                [
+                    rec.identifierType,
+                    rec.email || null,
+                    rec.domain || null,
+                    rec.password || null,
+                    'Indexed from feed stream',
+                    rec.sourceLeak,
+                    rec.recordFingerprint
+                ]
+            );
+            if (res.rowCount > 0) insertedTotal++;
         }
 
         await client.query('COMMIT');
+        return insertedTotal;
     } catch (err) {
         await client.query('ROLLBACK');
         console.error('[!] Database batch error:', err.message);
+        return 0;
     } finally {
         client.release();
     }
